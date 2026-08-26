@@ -285,13 +285,36 @@ export function buildApi() {
 
   r.get('/api/yahoo/status', () => oauth.connectionStatus());
 
+  // Browser-facing: a person clicking "Connect Yahoo" must never be shown raw
+  // JSON. Every failure on this route renders a page that says what to do.
   r.get('/auth/yahoo', ({ res, query }) => {
     if (!config.secret) {
-      throw httpError(400, 'ORACLE_SECRET is not set.',
-        'Credentials are encrypted at rest and refuse to be stored without a key. Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+      html(res, 400, page('Set ORACLE_SECRET first', `
+        <p>Yahoo refresh tokens are long-lived credentials to your real account, so this
+        platform encrypts them at rest and refuses to store them without a key.</p>
+        <p>Generate one and put it in your <code>.env</code> as <code>ORACLE_SECRET</code>:</p>
+        <pre><code>node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"</code></pre>
+        <p>Then restart the server and <a href="/auth/yahoo">try again</a>.</p>`));
+      return;
     }
-    const { url } = oauth.authorizeUrl({ access: query.write === '1' ? 'write' : 'read' });
-    redirect(res, url);
+    if (!config.yahoo.configured) {
+      html(res, 400, page('Yahoo is not configured', `
+        <p>Create an app at
+        <a href="https://developer.yahoo.com/apps/create/" target="_blank" rel="noopener">developer.yahoo.com</a>
+        with the <strong>Fantasy Sports</strong> permission, then set
+        <code>YAHOO_CLIENT_ID</code> and <code>YAHOO_CLIENT_SECRET</code> in your
+        <code>.env</code>.</p>
+        <p>The app's redirect URI must be exactly:</p>
+        <pre><code>${escapeHtml(config.yahoo.redirectUri)}</code></pre>
+        <p>Then restart the server and <a href="/auth/yahoo">try again</a>.</p>`));
+      return;
+    }
+    try {
+      const { url } = oauth.authorizeUrl({ access: query.write === '1' ? 'write' : 'read' });
+      redirect(res, url);
+    } catch (err) {
+      html(res, 400, page('Could not start the Yahoo connection', `<code>${escapeHtml(err.message)}</code>`));
+    }
   });
 
   r.get('/auth/yahoo/callback', async ({ res, query }) => {
@@ -374,7 +397,9 @@ function page(title, bodyHtml) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)} · Gridiron Oracle</title>
 <style>body{background:#0a0e14;color:#d6deeb;font:15px/1.6 ui-sans-serif,system-ui,sans-serif;max-width:46rem;margin:8vh auto;padding:0 1.5rem}
 h1{font-size:1.4rem;color:#7ee787}code{background:#141b26;padding:.15em .4em;border-radius:4px;color:#79c0ff;font-size:.9em}
-a{color:#79c0ff}li{margin:.35em 0}</style></head><body><h1>${escapeHtml(title)}</h1>${bodyHtml}</body></html>`;
+a{color:#79c0ff}li{margin:.35em 0}
+pre{background:#141b26;padding:.9rem 1rem;border-radius:6px;overflow-x:auto;border:1px solid #1e2938}
+pre code{background:none;padding:0;color:#7ee787}p{margin:.9em 0}</style></head><body><h1>${escapeHtml(title)}</h1>${bodyHtml}</body></html>`;
 }
 
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

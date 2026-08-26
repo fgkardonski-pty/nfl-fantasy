@@ -4,8 +4,14 @@
  *
  * Determinism is a product requirement, not a convenience: if the war room
  * tells you to bench a player, you must be able to re-run the exact simulation
- * that said so. Every stochastic path in the platform draws from an explicitly
- * seeded Rng instance — there are no calls to Math.random() anywhere in src/.
+ * that said so. Every MODELLING path in the platform draws from an explicitly
+ * seeded Rng instance.
+ *
+ * The only two uses of Math.random() in the codebase are network retry backoff
+ * jitter (src/util/http.mjs) and research-job start jitter
+ * (src/research/daemon.mjs). Both are deliberately non-reproducible: jitter
+ * exists precisely to decorrelate timing, and seeding it would defeat its
+ * purpose. Neither touches a projection, a simulation, or a recommendation.
  */
 
 /** SplitMix64-style hash used to expand a string or number into a 32-bit seed. */
