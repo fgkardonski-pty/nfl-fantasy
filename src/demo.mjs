@@ -68,9 +68,18 @@ const TALENT_CURVE = {
 
 export function generateDemoLeague({
   season = 2026, currentWeek = 9, numTeams = 12, seed = 20260826, dbWrite = true,
+  now = Date.now(),
 } = {}) {
   const rng = new Rng(seed);
   const leagueKey = `demo.l.${season}`;
+
+  // Anchor the demo clock so that `currentWeek` is happening RIGHT NOW. Pinning
+  // week 1 to a fixed September date puts the whole league in the past or the
+  // future depending on when the demo is seeded, which makes every
+  // recency-weighted signal — engagement, news decay, FAAB burn rate — wrong.
+  const weekMs = 7 * 864e5;
+  const week1Start = now - (currentWeek - 1) * weekMs;
+  const weekTime = (week, hourOffset = 0) => week1Start + (week - 1) * weekMs + hourOffset * 36e5;
 
   // ---- NFL schedule and bye weeks -----------------------------------------
   // Byes are assigned by taking whole PAIRINGS out of a week. Assigning byes to
@@ -205,7 +214,7 @@ export function generateDemoLeague({
       const dome = DOME_TEAMS.has(home);
       gamesRows.push({
         season, week, home, away,
-        kickoff: Date.UTC(season, 8, 7 + (week - 1) * 7, 17, 0, 0),
+        kickoff: weekTime(week, 17),
         total, spread,
         implied_home: impliedHome,
         implied_away: impliedAway,
@@ -347,14 +356,19 @@ export function generateDemoLeague({
   // ---- Transactions, driven by each manager's archetype --------------------
   const transactions = [];
   const faab = Object.fromEntries(teamKeys.map((k) => [k, 100]));
+  // Move rates are per team per week. A real, engaged twelve-team league runs
+  // well over a hundred transactions a season; too few and there is simply not
+  // enough behavioural evidence for the opponent model to read, which is the
+  // situation the model has to handle gracefully anyway but should not be the
+  // demo's default.
   const ARCH = {
-    balanced: { rate: 1.0, bidMult: 1.0, chase: 0.35, panic: 0.2 },
-    spender:  { rate: 1.7, bidMult: 2.6, chase: 0.45, panic: 0.3 },
-    chaser:   { rate: 1.6, bidMult: 1.2, chase: 0.85, panic: 0.4 },
-    stander:  { rate: 0.25, bidMult: 0.6, chase: 0.3, panic: 0.1 },
-    churner:  { rate: 1.4, bidMult: 0.9, chase: 0.5, panic: 0.8 },
-    dealer:   { rate: 0.9, bidMult: 1.0, chase: 0.3, panic: 0.2 },
-    absentee: { rate: 0.06, bidMult: 0.4, chase: 0.3, panic: 0.1 },
+    balanced: { rate: 1.6, bidMult: 1.0, chase: 0.30, panic: 0.20 },
+    spender:  { rate: 2.4, bidMult: 2.8, chase: 0.35, panic: 0.30 },
+    chaser:   { rate: 2.6, bidMult: 1.2, chase: 0.95, panic: 0.40 },
+    stander:  { rate: 0.35, bidMult: 0.6, chase: 0.25, panic: 0.10 },
+    churner:  { rate: 2.2, bidMult: 0.9, chase: 0.40, panic: 0.90 },
+    dealer:   { rate: 1.4, bidMult: 1.0, chase: 0.25, panic: 0.20 },
+    absentee: { rate: 0.05, bidMult: 0.4, chase: 0.25, panic: 0.10 },
   };
   let txnId = 0;
   const freePool = draftPool.slice(0, 200);
@@ -389,7 +403,7 @@ export function generateDemoLeague({
         const bid = Math.max(0, Math.round(rng.gammaMS(6 * a.bidMult, 6 * a.bidMult)));
         const spend = Math.min(bid, faab[t.team_key]);
         faab[t.team_key] -= spend;
-        const ts = Date.UTC(season, 8, 7 + (week - 1) * 7, 12, 0, 0) + rng.int(0, 72) * 36e5;
+        const ts = weekTime(week, 12) + rng.int(0, 72) * 36e5;
         transactions.push({
           league_key: leagueKey, txn_id: `tx${++txnId}`, type: 'add/drop', ts, week,
           team_key: t.team_key, player_id: target.player_id, movement: 'add',
@@ -398,31 +412,41 @@ export function generateDemoLeague({
         freePool.splice(freePool.indexOf(target), 1);
         rosters.get(t.team_key).push(target);
 
-        // The drop: panicky managers cut recent underperformers, others cut the worst.
+        // The drop. Whatever the manager's temperament, the result must be a
+        // LEGAL roster: dropping your only kicker to keep a sixth running back
+        // is not something any manager does, and a fallback that ignores the
+        // positional minimum is how it happens anyway.
         const roster = rosters.get(t.team_key);
-        let dropIdx;
+        const cnt = {};
+        for (const r of roster) cnt[r.pos] = (cnt[r.pos] ?? 0) + 1;
+        const MIN = { QB: 1, RB: 2, WR: 3, TE: 1, K: 1, DEF: 1 };
+        const canDrop = (p) => (cnt[p.pos] ?? 0) > (MIN[p.pos] ?? 1);
+
+        let dropIdx = null;
         if (rng.bool(a.panic)) {
-          const recent = roster.map((p, i) => {
-            const s = stats.find((x) => x.player_id === p.player_id && x.week === week - 1);
-            return { i, pts: s ? scoreFromLine(JSON.parse(s.stats)) : 0, ppg: p.__ppg };
-          }).filter((x) => x.ppg > 4).sort((x, y) => x.pts - y.pts);
-          dropIdx = recent[0]?.i;
+          // Panicky managers cut whoever disappointed most recently.
+          const recent = roster
+            .map((p, i) => {
+              const s = stats.find((x) => x.player_id === p.player_id && x.week === week - 1);
+              return { i, p, pts: s ? scoreFromLine(JSON.parse(s.stats)) : 0 };
+            })
+            .filter((x) => x.p.__ppg > 4 && canDrop(x.p))
+            .sort((x, y) => x.pts - y.pts);
+          dropIdx = recent[0]?.i ?? null;
         }
         if (dropIdx == null) {
-          const cnt = {};
-          for (const r of roster) cnt[r.pos] = (cnt[r.pos] ?? 0) + 1;
-          const MIN = { QB: 1, RB: 2, WR: 3, TE: 1, K: 1, DEF: 1 };
           let worst = -1;
           let worstScore = Infinity;
           roster.forEach((p, i) => {
-            if ((cnt[p.pos] ?? 0) <= (MIN[p.pos] ?? 1)) return; // never drop below legal minimum
+            if (!canDrop(p)) return;
             const surplus = (cnt[p.pos] ?? 0) - (MIN[p.pos] ?? 1);
-            const sc = p.__ppg / (1 + surplus * 0.5); // surplus positions get dropped first
+            const sc = p.__ppg / (1 + surplus * 0.5); // surplus positions go first
             if (sc < worstScore) { worstScore = sc; worst = i; }
           });
-          dropIdx = worst >= 0 ? worst : roster.reduce((w, p, i) => (p.__ppg < roster[w].__ppg ? i : w), 0);
+          dropIdx = worst >= 0 ? worst : null;
         }
-        const dropped = roster[dropIdx];
+
+        const dropped = dropIdx == null ? null : roster[dropIdx];
         if (dropped && roster.length > rosterSize) {
           roster.splice(dropIdx, 1);
           freePool.push(dropped);
@@ -434,12 +458,12 @@ export function generateDemoLeague({
         }
       }
       // Dealers make trades.
-      if (t.archetype === 'dealer' && rng.bool(0.35)) {
+      if (t.archetype === 'dealer' && rng.bool(0.8)) {
         const other = rng.pick(teams.filter((x) => x.team_key !== t.team_key));
         const mine = rng.pick(rosters.get(t.team_key));
         const theirs = rng.pick(rosters.get(other.team_key));
         if (mine && theirs) {
-          const ts = Date.UTC(season, 8, 7 + (week - 1) * 7, 20, 0, 0);
+          const ts = weekTime(week, 20);
           transactions.push({ league_key: leagueKey, txn_id: `tx${++txnId}`, type: 'trade', ts, week, team_key: t.team_key, player_id: theirs.player_id, movement: 'add', source: other.team_key, destination: t.team_key, faab_bid: null, raw: null });
           transactions.push({ league_key: leagueKey, txn_id: `tx${txnId}`, type: 'trade', ts, week, team_key: other.team_key, player_id: mine.player_id, movement: 'add', source: t.team_key, destination: other.team_key, faab_bid: null, raw: null });
         }
@@ -489,13 +513,13 @@ export function generateDemoLeague({
     ]),
     waiver_type: 'FAAB',
     faab_budget: 100,
-    trade_deadline: `${season}-11-20`,
+    trade_deadline: new Date(weekTime(12)).toISOString().slice(0, 10),
     playoff_start_week: 15,
     end_week: 17,
     num_playoff_teams: 6,
     current_week: currentWeek,
     is_demo: 1,
-    synced_at: Date.now(),
+    synced_at: now,
   };
 
   const teamRows = teams.map((t) => ({

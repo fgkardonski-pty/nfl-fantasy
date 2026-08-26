@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gridiron Oracle</title>
+<meta name="description" content="A self-hosted war room built to win your fantasy football league.">
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏈</text></svg>">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>Gridiron Oracle</h1>
+      <div class="tag">win the league</div>
+    </div>
+    <nav class="nav" id="nav">
+      <div class="group">This week</div>
+      <a href="#/warroom"  data-view="warroom"><span class="ico">◈</span> War Room</a>
+      <a href="#/waivers"  data-view="waivers"><span class="ico">⊕</span> Waivers</a>
+      <a href="#/trades"   data-view="trades"><span class="ico">⇄</span> Trades</a>
+      <a href="#/intel"    data-view="intel"><span class="ico">◎</span> Opponents</a>
+      <div class="group">Season</div>
+      <a href="#/outlook"  data-view="outlook"><span class="ico">▲</span> Odds</a>
+      <a href="#/players"  data-view="players"><span class="ico">☰</span> Players</a>
+      <div class="group">Draft</div>
+      <a href="#/draft"    data-view="draft"><span class="ico">◆</span> Draft Room</a>
+      <div class="group">System</div>
+      <a href="#/data"     data-view="data"><span class="ico">⚙</span> Data &amp; Yahoo</a>
+    </nav>
+    <div class="sidebar-foot" id="foot"></div>
+  </aside>
+  <main class="main" id="main">
+    <div class="loading"><span class="spinner"></span> loading league…</div>
+  </main>
+</div>
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

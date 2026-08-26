@@ -17,13 +17,14 @@
 import { all, get, j } from '../db/index.mjs';
 import { clamp, mean, round, softmax, zscores } from '../util/stats.mjs';
 import { POSITIONS, startingSlots, eligiblePositions } from './roster.mjs';
+import { scoreStatLine, DEFAULT_SCORING } from './scoring.mjs';
 
 const WEEK_MS = 7 * 864e5;
 
 /**
  * Build the behavioural profile for one manager from their transaction history.
  */
-export function buildProfile(leagueKey, teamKey, { season, currentWeek, now = Date.now() } = {}) {
+export function buildProfile(leagueKey, teamKey, { season, currentWeek, scoring, now = Date.now() } = {}) {
   const team = get('SELECT * FROM teams WHERE league_key = ? AND team_key = ?', [leagueKey, teamKey]);
   if (!team) return null;
 
@@ -74,7 +75,7 @@ export function buildProfile(leagueKey, teamKey, { season, currentWeek, now = Da
   // --- Recency chasing ------------------------------------------------------
   // Did the players they added just have a big week? A manager who only ever
   // adds last week's top performers is trivially front-runnable.
-  const chase = recencyChasing(leagueKey, adds, season);
+  const chase = recencyChasing(leagueKey, adds, season, scoring ?? DEFAULT_SCORING);
 
   // --- Panic dropping -------------------------------------------------------
   // Drops of players who were added less than 3 weeks earlier.
@@ -89,8 +90,12 @@ export function buildProfile(leagueKey, teamKey, { season, currentWeek, now = Da
 
   // --- Engagement -----------------------------------------------------------
   const lastActivity = txns.length ? Number(txns[txns.length - 1].ts) : 0;
-  const daysSinceActive = lastActivity ? (now - lastActivity) / 864e5 : 999;
-  const engagement = clamp(1 - daysSinceActive / 21, 0, 1);
+  // No transaction at all is "never active", not "active 999 days ago" — the
+  // distinction matters because the UI and the archetype rules both read it.
+  // Clamped at zero: a clock skew (or a demo league whose season sits in the
+  // future) must not produce a negative age that reads as "active in -62 days".
+  const daysSinceActive = lastActivity ? Math.max(0, (now - lastActivity) / 864e5) : Infinity;
+  const engagement = Number.isFinite(daysSinceActive) ? clamp(1 - daysSinceActive / 21, 0, 1) : 0;
 
   // --- Trading --------------------------------------------------------------
   const tradeAppetite = clamp((trades.length / Math.max(1, weeksElapsed)) / 0.4, 0, 1);
@@ -118,7 +123,8 @@ export function buildProfile(leagueKey, teamKey, { season, currentWeek, now = Da
     chase: round(chase, 3),
     panic: round(panic, 3),
     engagement: round(engagement, 3),
-    daysSinceActive: round(daysSinceActive, 1),
+    daysSinceActive: Number.isFinite(daysSinceActive) ? round(daysSinceActive, 1) : null,
+    everActive: Number.isFinite(daysSinceActive),
     tradeAppetite: round(tradeAppetite, 3),
     // Archetype is assigned league-relative by assignArchetypes(); a single
     // profile in isolation has no baseline to be judged against.
@@ -128,29 +134,62 @@ export function buildProfile(leagueKey, teamKey, { season, currentWeek, now = Da
 }
 
 /**
- * How strongly this manager's adds correlate with the previous week's fantasy
- * output — i.e. how much they are chasing the box score rather than the role.
+ * How strongly this manager's adds chase the previous week's BOX SCORE rather
+ * than the underlying role.
+ *
+ * The measure is a percentile, not an absolute threshold. "Had a big game" as
+ * an absolute (100 yards, two touchdowns) almost never fires for a free agent,
+ * because free agents are by definition the players who do not do that — so an
+ * absolute test reports every manager as a non-chaser and the signal is dead.
+ * What actually identifies a chaser is that the players they add were near the
+ * TOP OF WHAT WAS AVAILABLE last week, whatever that happened to be worth.
  */
-function recencyChasing(leagueKey, adds, season) {
+function recencyChasing(leagueKey, adds, season, scoring) {
   if (!adds.length) return 0;
-  let hits = 0;
+
+  // Cache the previous-week scoring distribution per (week, position).
+  const distCache = new Map();
+  const distributionFor = (week, pos) => {
+    const key = `${week}|${pos}`;
+    if (distCache.has(key)) return distCache.get(key);
+    const rows = all(
+      `SELECT ps.stats FROM player_stats ps JOIN players p ON p.player_id = ps.player_id
+       WHERE ps.season = ? AND ps.week = ? AND p.pos = ?`,
+      [season, week, pos]
+    );
+    const pts = rows
+      .map((r) => scoreStatLine(j(r.stats, {}), scoring))
+      .filter((x) => Number.isFinite(x))
+      .sort((a, b) => a - b);
+    distCache.set(key, pts);
+    return pts;
+  };
+
+  let acc = 0;
   let n = 0;
   for (const a of adds) {
     const wk = Number(a.week);
     if (!Number.isFinite(wk) || wk < 2) continue;
+    const player = get('SELECT pos FROM players WHERE player_id = ?', [a.player_id]);
+    if (!player) continue;
     const prev = get(
       'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week = ?',
       [a.player_id, season, wk - 1]
     );
     if (!prev) continue;
+    const pts = scoreStatLine(j(prev.stats, {}), scoring);
+    const dist = distributionFor(wk - 1, player.pos);
+    if (dist.length < 5) continue;
+    // Percentile of this player's previous week within his position.
+    let below = 0;
+    for (const x of dist) { if (x < pts) below++; else break; }
+    acc += below / dist.length;
     n += 1;
-    const s = j(prev.stats, {});
-    // Crude but effective proxy for "had a loud week".
-    const loud = (Number(s.rec_td ?? 0) + Number(s.rush_td ?? 0) + Number(s.pass_td ?? 0)) >= 2 ||
-      Number(s.rush_yd ?? 0) >= 100 || Number(s.rec_yd ?? 0) >= 100;
-    if (loud) hits += 1;
   }
-  return n ? hits / n : 0;
+  if (!n) return 0;
+  // Centre on 0.5 (an indifferent manager adds an average performer) and
+  // rescale so the trait spans 0..1 the way the other traits do.
+  return clamp((acc / n - 0.5) * 2, 0, 1);
 }
 
 /**
@@ -169,36 +208,47 @@ const ARCHETYPES = [
     key: 'absentee', label: 'Absentee',
     note: 'Has not touched the roster in weeks. Free wins and cheap trade targets.',
     signature: { engagement: -2.0, aggression: -1.0 },
-    hard: (t) => t.engagement < 0.3 || t.daysSinceActive > 21,
+    primary: { trait: 'engagement', direction: -1 },
+    hard: (t) => t.engagement < 0.3 || t.daysSinceActive == null || t.daysSinceActive > 21,
   },
   {
     key: 'spender', label: 'Budget Burner',
     note: 'Spends FAAB far faster than the calendar. Outlast, do not outbid — he will be broke when it matters.',
     signature: { burnRatio: 1.6, aggression: 0.6 },
+    primary: { trait: 'burnRatio', direction: 1 },
     hard: (t) => t.burnRatio > 1.25,
   },
   {
     key: 'chaser', label: 'Box Score Chaser',
     note: "Buys last week's points rather than the role. Sell him volatile players right after a spike.",
     signature: { chase: 1.8, aggression: 0.8 },
+    primary: { trait: 'chase', direction: 1 },
     hard: (t) => t.chase > 0.4,
   },
   {
     key: 'churner', label: 'Panic Churner',
     note: 'Cuts talent after one bad game. Watch his drops — real value falls out of this roster.',
     signature: { panic: 1.8, aggression: 0.5 },
+    primary: { trait: 'panic', direction: 1 },
     hard: (t) => t.panic > 0.55,
   },
   {
     key: 'dealer', label: 'Active Dealer',
     note: 'Trades willingly. Your most likely counterparty for a consolidation deal.',
-    signature: { tradeAppetite: 2.0 },
-    hard: (t) => t.tradeAppetite > 0.15,
+    // A trade appears in the log for BOTH teams and no provider marks which
+    // side proposed it, so trade count alone cannot distinguish a dealer from
+    // someone who merely gets offered trades. Requiring general activity
+    // alongside it separates the manager who works the phones from the one who
+    // occasionally accepts.
+    signature: { tradeAppetite: 2.0, aggression: 0.7 },
+    primary: { trait: 'tradeAppetite', direction: 1 },
+    hard: (t) => t.tradeAppetite > 0.4 && t.aggression > 0.3,
   },
   {
     key: 'stander', label: 'Set-and-Forget',
     note: 'Drafts and sits. Will not contest your waiver claims — you can bid low against him.',
     signature: { aggression: -1.6, engagement: 0.4 },
+    primary: { trait: 'aggression', direction: -1 },
     hard: (t) => t.aggression < 0.35 && t.engagement >= 0.3,
   },
 ];
@@ -242,6 +292,17 @@ export function assignArchetypes(profiles) {
     let bestScore = 0;
     for (const a of ARCHETYPES) {
       if (a.hard && !a.hard(t)) continue;
+
+      // The DEFINING trait must genuinely stand out, not merely be positive in
+      // a composite. Without this, a manager who is unremarkable on the trait
+      // an archetype is named for still collects the label because a secondary
+      // term carried the sum — which is how a whole league ends up labelled
+      // "Active Dealer" on trade counts that are mostly other people's trades.
+      if (a.primary) {
+        const pz = z(t, a.primary.trait) * a.primary.direction;
+        if (pz < 0.8) continue;
+      }
+
       // Dot product of the manager's z-scores with the archetype signature,
       // normalised so archetypes with more terms are not automatically favoured.
       let score = 0;

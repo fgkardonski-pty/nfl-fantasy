@@ -12,7 +12,7 @@
     "seed": "node bin/oracle.mjs demo",
     "sync": "node bin/oracle.mjs sync",
     "research": "node bin/oracle.mjs research",
-    "test": "node --test --experimental-sqlite test/"
+    "test": "node --test --experimental-sqlite \"test/*.test.mjs\""
   },
   "dependencies": {},
   "devDependencies": {}

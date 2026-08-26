@@ -234,7 +234,7 @@ export function buildApi() {
       .filter((t) => !t.is_mine)
       .map((t) => ({ team_key: t.team_key, bias: {} }));
 
-    return recommendPick({
+    const result = recommendPick({
       available: projected,
       myRoster,
       rosterSlots: league.rosterSlots,
@@ -245,6 +245,22 @@ export function buildApi() {
       sims: Math.min(int(query.sims, config.sims.draft), 1500),
       limit: Math.min(int(query.limit, 15), 60),
     });
+
+    // `all` is the entire scored player universe and `tiers` carries a full
+    // copy of every player inside every tier — together roughly half a megabyte
+    // the client never reads. Send the board and a tier SUMMARY instead.
+    const { all: _all, tiers, ...rest } = result;
+    return {
+      ...rest,
+      pickNumber,
+      nextPickNumber: nextPick,
+      tierSummary: Object.fromEntries(
+        Object.entries(tiers ?? {}).map(([pos, list]) => [
+          pos,
+          list.slice(0, 8).map((t) => ({ tier: t.tier, size: t.size, high: t.high, low: t.low, cliff: t.cliff })),
+        ])
+      ),
+    };
   });
 
   r.get('/api/draft/tiers', ({ query }) => {
@@ -253,7 +269,16 @@ export function buildApi() {
     const pool = pos ? all('SELECT * FROM players WHERE pos = ?', [pos]) : all('SELECT * FROM players');
     const projected = S.draftValues(league, pool);
     const { players, levels, meta: m } = computeVor(projected, league.rosterSlots, league.num_teams);
-    return { replacementLevels: levels, replacementMeta: m, tiers: tierSummary(tierize(players)).slice(0, 14) };
+    // Tier summaries carry their members, but only the fields a board needs.
+    const tiers = tierSummary(tierize(players)).slice(0, 14).map((t) => ({
+      tier: t.tier, size: t.size, high: t.high, low: t.low, cliff: t.cliff,
+      players: t.players.map((p) => ({
+        player_id: p.player_id, name: p.name, pos: p.pos, nfl_team: p.nfl_team,
+        mean: Math.round(p.mean * 10) / 10, vor: Math.round(p.vor * 10) / 10,
+        posRank: p.posRank, adp: p.adp,
+      })),
+    }));
+    return { replacementLevels: levels, replacementMeta: m, tiers };
   });
 
   // ---- Yahoo --------------------------------------------------------------

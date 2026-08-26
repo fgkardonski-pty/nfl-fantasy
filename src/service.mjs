@@ -13,7 +13,7 @@ import { projectPlayer, MODEL_VERSION, profile as projProfile } from './engine/p
 import { optimalLineup } from './engine/optimizer.mjs';
 import { simulateMatchup, simulateSeason, teamWeekDistribution, roundRobinSchedule } from './engine/simulate.mjs';
 import { optimizeForWinProbability, posture } from './engine/leverage.mjs';
-import { computeVor, tierize, tierSummary } from './engine/vor.mjs';
+import { computeVor, replacementLevels, tierize, tierSummary } from './engine/vor.mjs';
 import { rankWaiverTargets, breakoutScan, worstDroppable } from './engine/waivers.mjs';
 import { scanLeague, evaluateOffer } from './engine/trades.mjs';
 import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachTargets, positionalNeed } from './engine/opponent.mjs';
@@ -353,13 +353,45 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
 
   const sim = simulateMatchup(decision.recommended.starters, oppStarters, { sims, seed: config.seed + 1 });
 
+  // Trim the response before it crosses the wire. Every candidate lineup
+  // carries a full copy of its starters' projections, including the component
+  // breakdowns — six candidates is a quarter of a megabyte of duplicated
+  // objects that the client never reads.
+  const slimCandidates = decision.candidates.map((cand) => ({
+    id: cand.id,
+    label: cand.label,
+    swap: cand.swap ? { in: brief(cand.swap.in), out: brief(cand.swap.out), slot: cand.swap.slot } : null,
+    pointCost: round(cand.pointCost ?? 0, 2),
+    winProb: cand.winProb,
+    mean: round(cand.mean, 1),
+    sd: round(cand.sd, 1),
+    floor: round(cand.floor, 1),
+    ceiling: round(cand.ceiling, 1),
+    correlationLoad: round(cand.correlationLoad ?? 0, 3),
+  }));
+
   return {
     week,
     me: { ...me, projection: round(decision.recommended.mean, 1) },
     opponent: opp ? { ...opp, projection: round(sim.oppMean, 1) } : null,
     winProbability: sim.winProb,
     posture: posture(decision.pointOptimal.winProb),
-    decision,
+    decision: {
+      recommended: {
+        id: decision.recommended.id,
+        label: decision.recommended.label,
+        lineup: decision.recommended.lineup,
+        winProb: decision.recommended.winProb,
+        mean: round(decision.recommended.mean, 1),
+      },
+      pointOptimalId: decision.pointOptimal.id,
+      candidates: slimCandidates,
+      disagreement: decision.disagreement,
+      winProbGain: decision.winProbGain,
+      pointsGiven: decision.pointsGiven,
+      explanation: decision.explanation,
+      stacks: decision.stacks,
+    },
     sim: {
       winProb: sim.winProb,
       myMean: round(sim.myMean, 1), mySd: round(sim.mySd, 1),
@@ -376,6 +408,9 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
     oppLineup: oppBest.lineup,
   };
 }
+
+/** Minimal player reference for wire payloads. */
+const brief = (p) => (p ? { player_id: p.player_id, name: p.name, pos: p.pos } : null);
 
 function histogram(mine, opp, bins = 28) {
   const allv = [...mine, ...opp];
@@ -401,7 +436,7 @@ export function waiverBoard(league, { week = league.current_week, limit = 25 } =
   const faProj = project(league, fa, week);
 
   const profiles = buildAllProfiles(league.league_key, {
-    season: league.season, currentWeek: week,
+    season: league.season, currentWeek: week, scoring: league.scoring,
   });
   const outlook = cachedOutlook(league);
   const mine = outlook.results.find((r) => r.team_key === me.team_key);
@@ -450,7 +485,7 @@ export function tradeBoard(league, { week = league.current_week, limit = 15 } = 
   const teams = getTeams(league.league_key).filter((t) => t.team_key !== me.team_key);
   const weeksRemaining = Math.max(1, (league.playoff_start_week ?? 15) - week);
 
-  const profiles = buildAllProfiles(league.league_key, { season: league.season, currentWeek: week });
+  const profiles = buildAllProfiles(league.league_key, { season: league.season, currentWeek: week, scoring: league.scoring });
   const profileByTeam = new Map(profiles.map((p) => [p.team_key, p]));
 
   const rivals = teams.map((t) => ({
@@ -503,7 +538,7 @@ export function intel(league, { week = league.current_week } = {}) {
 
   // Archetypes are league-relative, so every profile must be built before any
   // of them can be labelled.
-  const profiles = buildAllProfiles(league.league_key, { season: league.season, currentWeek: week });
+  const profiles = buildAllProfiles(league.league_key, { season: league.season, currentWeek: week, scoring: league.scoring });
   const profileByTeam = new Map(profiles.map((p) => [p.team_key, p]));
 
   const dossiers = teams.map((t) => {
@@ -558,6 +593,15 @@ export function intel(league, { week = league.current_week } = {}) {
 // ---------------------------------------------------------------------------
 
 export function playerBoard(league, { week = league.current_week, pos = null, q = null, limit = 120, availableOnly = false } = {}) {
+  // Replacement level is a property of the LEAGUE, not of whatever slice of
+  // players the user happens to be looking at. Computing it from a filtered
+  // subset would mean that switching the position filter silently changed every
+  // player's value over replacement — so the baseline is always derived from
+  // the full player universe, and only the display is filtered.
+  const universe = all('SELECT * FROM players');
+  const universeProj = project(league, universe, week);
+  const { levels, meta: levelMeta } = replacementLevels(universeProj, league.rosterSlots, league.num_teams);
+
   let sql = `SELECT p.*, o.pct_owned, o.pct_started, o.pct_change,
                     r.team_key AS owner_key, t.name AS owner_name
              FROM players p
@@ -573,24 +617,41 @@ export function playerBoard(league, { week = league.current_week, pos = null, q 
   params.push(limit);
 
   const rows = all(sql, params);
-  const proj = project(league, rows, week);
-  const { players: valued, levels } = computeVor(proj, league.rosterSlots, league.num_teams);
-  const tiered = tierize(valued);
-  const tierMap = new Map(tiered.map((t) => [t.player_id, t.tier]));
-  return {
-    week,
-    replacementLevels: levels,
-    players: valued.map((p, i) => {
-      const src = rows.find((r) => r.player_id === p.player_id);
-      return {
-        ...p,
-        tier: tierMap.get(p.player_id) ?? 1,
-        owner: src?.owner_name ?? null,
-        ownerKey: src?.owner_key ?? null,
-        pctOwned: src?.pct_owned ?? null,
-      };
-    }),
-  };
+  const byId = new Map(universeProj.map((p) => [p.player_id, p]));
+
+  // Positional ranks come from the whole universe too, so "WR12" means the
+  // twelfth-best receiver in the league, not the twelfth on this page.
+  const posRanks = new Map();
+  const counters = {};
+  for (const p of [...universeProj].sort((a, b) => b.mean - a.mean)) {
+    counters[p.pos] = (counters[p.pos] ?? 0) + 1;
+    posRanks.set(p.player_id, counters[p.pos]);
+  }
+
+  // Tiers, likewise, are computed per position across the full universe.
+  const tierOf = new Map();
+  for (const position of POSITIONS) {
+    const pool = universeProj.filter((p) => p.pos === position);
+    if (!pool.length) continue;
+    for (const t of tierize(pool)) tierOf.set(t.player_id, t.tier);
+  }
+
+  const players = rows.map((row) => {
+    const proj = byId.get(row.player_id) ?? project(league, [row], week)[0];
+    return {
+      ...proj,
+      vor: proj.mean - (levels[proj.pos] ?? 0),
+      replacement: levels[proj.pos] ?? 0,
+      posRank: posRanks.get(row.player_id) ?? null,
+      tier: tierOf.get(row.player_id) ?? 1,
+      owner: row.owner_name ?? null,
+      ownerKey: row.owner_key ?? null,
+      pctOwned: row.pct_owned ?? null,
+      pctChange: row.pct_change ?? null,
+    };
+  }).sort((a, b) => b.vor - a.vor);
+
+  return { week, replacementLevels: levels, replacementMeta: levelMeta, players };
 }
 
 export function playerDetail(league, playerId, { week = league.current_week } = {}) {

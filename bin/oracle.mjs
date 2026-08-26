@@ -185,7 +185,7 @@ const COMMANDS = {
       const tag = d.is_mine ? c.green + ' (you)' + c.reset : '';
       out(`\n  ${c.bold}${d.name}${c.reset} ${c.grey}· ${d.manager}${c.reset}${tag}  ${c.magenta}${d.archetype.label}${c.reset} ${c.grey}(conf ${d.archetype.confidence})${c.reset}`);
       out(`    ${c.grey}${d.archetype.note}${c.reset}`);
-      out(`    ${c.grey}record ${d.record.wins}-${d.record.losses} · $${d.faab.remaining} FAAB (burn ${d.faab.burnRatio}×) · ${d.counts.adds} adds · ${d.counts.trades} trades · last active ${d.daysSinceActive}d ago${c.reset}`);
+      out(`    ${c.grey}record ${d.record.wins}-${d.record.losses} · $${d.faab.remaining} FAAB (burn ${d.faab.burnRatio}×) · ${d.counts.adds} adds · ${d.counts.trades} trades · last active ${d.daysSinceActive == null ? 'never' : d.daysSinceActive + 'd ago'}${c.reset}`);
       if (!d.is_mine && d.claims.predictions.length) {
         out(`    ${c.cyan}predicted claims${c.reset} ${c.grey}(${pct(d.claims.willAct, 0)} chance he acts)${c.reset}`);
         for (const p of d.claims.predictions.slice(0, 3)) {
