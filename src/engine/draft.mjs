@@ -25,12 +25,57 @@ import { positionalDemand, startingSlots, POSITIONS } from './roster.mjs';
 import { softmax, clamp, mean, round } from '../util/stats.mjs';
 
 /**
+ * A single ordering for "who is realistically on the board".
+ *
+ * ADP is the best available signal for what opponents will do, but real ADP
+ * data is sparse — it covers only players who were actually drafted, so a
+ * mid-season free agent or an undrafted breakout has none. Sorting by ADP alone
+ * pushes every such player to the back of the shortlist, where the opponent
+ * model never touches them, so they "survive" every simulation and VONA
+ * collapses to zero for their whole position.
+ *
+ * The composite rank takes the better of a player's ADP and his rank by our own
+ * valuation, so a genuinely valuable player is always in contention regardless
+ * of whether ADP knows about him.
+ */
+export function draftRanks(available) {
+  // Rank by VALUE OVER REPLACEMENT where we have it, not raw projected points.
+  // Raw points rank every quarterback above every running back, which would
+  // fill the realistic-draft shortlist with quarterbacks and model a draft
+  // room that has never existed.
+  const key = (p) => (p.vor !== undefined ? p.vor : (p.mean ?? 0));
+  const byValue = [...available].sort((a, b) => key(b) - key(a));
+  const valueRank = new Map(byValue.map((p, i) => [p.player_id, i + 1]));
+  const ranks = new Map();
+  for (const p of available) {
+    const vr = valueRank.get(p.player_id) ?? 999;
+    const adp = Number.isFinite(p.adp) ? p.adp : Infinity;
+    ranks.set(p.player_id, Math.min(adp, vr));
+  }
+  return ranks;
+}
+
+/** The players an opponent would realistically consider at this point. */
+export function shortlist(available, size) {
+  const ranks = draftRanks(available);
+  return [...available]
+    .sort((a, b) => ranks.get(a.player_id) - ranks.get(b.player_id))
+    .slice(0, size);
+}
+
+/**
  * Probability that a given available player is taken at a given pick by an
  * opponent, given ADP, positional run pressure, and that opponent's bias.
  */
-function opponentPickWeights(available, pickNumber, { runPressure = {}, bias = {}, adpNoise = 9 }) {
+function opponentPickWeights(available, pickNumber, { runPressure = {}, bias = {}, adpNoise = 9, ranks = null }) {
+  const rank = ranks ?? draftRanks(available);
   return available.map((p) => {
-    const adp = p.adp ?? p.overallRank ?? 200;
+    // Use the composite rank, not raw ADP. Opponents mostly follow consensus,
+    // but they are not blind: a player whose role has changed since draft day
+    // does get taken well ahead of his stale ADP, and a model that never takes
+    // him reports zero opportunity cost for waiting, which is the opposite of
+    // the truth.
+    const adp = rank.get(p.player_id) ?? p.adp ?? 200;
     // Distance from ADP in picks; managers overwhelmingly draft near consensus.
     const z = (pickNumber - adp) / adpNoise;
     // Logistic-ish: strongly disfavoured well before ADP, near-certain well after.
@@ -45,15 +90,22 @@ function opponentPickWeights(available, pickNumber, { runPressure = {}, bias = {
  * Simulate the draft forward from `pickNumber` to `untilPick`, returning the
  * board as it would realistically look when you are back on the clock.
  */
-export function simulateForward(available, pickNumber, untilPick, opponents, rng) {
-  const pool = available.map((p) => ({ ...p }));
+export function simulateForward(available, pickNumber, untilPick, opponents, rng, { poolSize = 70 } = {}) {
+  // Real drafters pick from a short list, not from every rostered NFL player.
+  // Sampling across the whole universe flattens the distribution so badly that
+  // elite players "survive" every simulation and VONA collapses to zero.
+  const pool = shortlist(available, Math.max(poolSize, (untilPick - pickNumber) * 3))
+    .map((p) => ({ ...p }));
+  const poolRanks = draftRanks(pool);
   const runPressure = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
   const taken = [];
   for (let pick = pickNumber; pick < untilPick && pool.length; pick++) {
     const opp = opponents[(pick - 1) % Math.max(1, opponents.length)] ?? {};
-    const weights = opponentPickWeights(pool, pick, { runPressure, bias: opp.bias ?? {} });
-    // Temperature: real drafts are noisy but not random.
-    const probs = softmax(weights.map((w) => Math.log(w) * 1.4), 1);
+    const weights = opponentPickWeights(pool, pick, { runPressure, bias: opp.bias ?? {}, ranks: poolRanks });
+    // Temperature below 1 sharpens the distribution: real drafts are noisy but
+    // they are not close to uniform, and a flat softmax here would make every
+    // elite player appear to survive to your next pick.
+    const probs = softmax(weights.map((w) => Math.log(w)), 0.55);
     const idx = rng.weightedIndex(probs);
     const [picked] = pool.splice(idx, 1);
     taken.push(picked);
@@ -76,14 +128,29 @@ export function computeVona(available, { pickNumber, nextPickNumber, opponents, 
   const bestLater = Object.fromEntries(POSITIONS.map((p) => [p, []]));
   const survival = new Map(available.map((p) => [p.player_id, 0]));
 
+  // Players outside the realistic draft shortlist are never taken by the
+  // opponent model, so they survive with probability 1 and set the floor for
+  // "best still available later".
+  const shortlistIds = new Set(
+    shortlist(available, Math.max(70, (nextPickNumber - pickNumber) * 3)).map((p) => p.player_id)
+  );
+  const floorByPos = {};
+  for (const p of available) {
+    if (shortlistIds.has(p.player_id)) continue;
+    if (!floorByPos[p.pos] || p.mean > floorByPos[p.pos]) floorByPos[p.pos] = p.mean;
+    survival.set(p.player_id, sims); // never contested
+  }
+
   for (let s = 0; s < sims; s++) {
     const { remaining } = simulateForward(available, pickNumber + 1, nextPickNumber, opponents, rng);
     const byPos = {};
     for (const p of remaining) {
       if (!byPos[p.pos] || p.mean > byPos[p.pos].mean) byPos[p.pos] = p;
-      survival.set(p.player_id, (survival.get(p.player_id) ?? 0) + 1);
+      if (shortlistIds.has(p.player_id)) survival.set(p.player_id, (survival.get(p.player_id) ?? 0) + 1);
     }
-    for (const pos of POSITIONS) bestLater[pos].push(byPos[pos]?.mean ?? 0);
+    for (const pos of POSITIONS) {
+      bestLater[pos].push(Math.max(byPos[pos]?.mean ?? 0, floorByPos[pos] ?? 0));
+    }
   }
 
   const vona = {};
@@ -112,13 +179,25 @@ export function recommendPick({
   opponents = [], sims = 300, seed = 11, limit = 12,
 }) {
   const { players: valued, levels, meta } = computeVor(available, rosterSlots, numTeams);
-  const tiered = tierize(valued);
-  const tierOf = new Map(tiered.map((p) => [p.player_id, p.tier]));
-  const tiers = tierSummary(tiered);
+
+  // Tier WITHIN each position. A global tier list bands quarterbacks against
+  // kickers, which is arithmetically valid and completely useless to a drafter:
+  // what you need to see is the cliff at YOUR position.
+  const tierOf = new Map();
   const lastInTier = new Set();
-  for (const t of tiers) {
-    if (t.players.length) lastInTier.add(t.players[t.players.length - 1].player_id);
+  const tiersByPos = {};
+  for (const pos of POSITIONS) {
+    const posPlayers = valued.filter((p) => p.pos === pos);
+    if (!posPlayers.length) continue;
+    const tiered = tierize(posPlayers);
+    for (const p of tiered) tierOf.set(p.player_id, p.tier);
+    const summary = tierSummary(tiered);
+    tiersByPos[pos] = summary;
+    for (const t of summary) {
+      if (t.players.length) lastInTier.add(t.players[t.players.length - 1].player_id);
+    }
   }
+  const tiers = tiersByPos;
 
   const { vona, survivalProb } = computeVona(valued, {
     pickNumber, nextPickNumber, opponents, sims, seed,

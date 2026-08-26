@@ -18,7 +18,7 @@ import { rankWaiverTargets, breakoutScan, worstDroppable } from './engine/waiver
 import { scanLeague, evaluateOffer } from './engine/trades.mjs';
 import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachTargets, positionalNeed } from './engine/opponent.mjs';
 import { rebuildTeamDefense } from './engine/matchup.mjs';
-import { round, clamp, mean } from './util/stats.mjs';
+import { round, clamp, mean, shrink } from './util/stats.mjs';
 import { logger } from './util/log.mjs';
 
 const log = logger('service');
@@ -174,6 +174,91 @@ function persistProjections(leagueKey, season, week, projections) {
     })),
     ['league_key', 'player_id', 'season', 'week']
   );
+}
+
+/**
+ * Season-long per-game value, for DRAFT and dynasty valuation.
+ *
+ * This is deliberately different from the weekly projection. A weekly
+ * projection asks "what will he score against Denver this Sunday"; a draft
+ * board asks "what is he worth over a season", which must ignore any single
+ * matchup and must work before a single snap has been played.
+ *
+ * Three tiers of evidence, in order:
+ *   1. observed production this season, recency-weighted and shrunk to the
+ *      positional prior by sample size,
+ *   2. ADP, when there is no production yet — the market's aggregate opinion is
+ *      a far better pre-season prior than "every wide receiver is average",
+ *   3. the positional prior, when we have neither.
+ *
+ * Using the weekly projection here is the bug that makes every pre-season draft
+ * board show identical values for every player at a position.
+ */
+export function draftValues(league, players) {
+  const season = league.season;
+  const priors = { QB: 15, RB: 9, WR: 9, TE: 6.5, K: 7.5, DEF: 6.5 };
+  const shrinkK = { QB: 3, RB: 3.5, WR: 4, TE: 4, K: 5, DEF: 5 };
+
+  // ADP -> expected per-game points. Calibrated so the 1.01 pick sits near an
+  // elite season and value decays through the draft, per position.
+  const adpCurve = (pos, adp) => {
+    const prior = priors[pos] ?? 9;
+    const peak = { QB: 1.55, RB: 2.35, WR: 2.25, TE: 2.1, K: 1.15, DEF: 1.2 }[pos] ?? 2;
+    // Exponential decay with a ~60-pick half life, floored at replacement-ish.
+    const factor = 0.55 + (peak - 0.55) * Math.exp(-Math.max(0, adp - 1) / 60);
+    return prior * factor;
+  };
+
+  return players.map((p) => {
+    const rows = all(
+      'SELECT week, stats FROM player_stats WHERE player_id = ? AND season = ? ORDER BY week DESC',
+      [p.player_id, season]
+    );
+    const prior = priors[p.pos] ?? 9;
+    const adp = adpOf(p.player_id, season);
+
+    let value;
+    let basis;
+    if (rows.length) {
+      const pts = rows.map((r) => scoreStatLine(j(r.stats, {}), league.scoring));
+      const w = pts.map((_, i) => Math.exp(-i / 5));
+      const observed = pts.reduce((a, x, i) => a + x * w[i], 0) / w.reduce((a, b) => a + b, 0);
+      // When ADP exists, blend it in as a prior rather than discarding it: it
+      // encodes talent and situation that a short sample cannot.
+      const anchor = adp != null ? (observed + adpCurve(p.pos, adp)) / 2 : observed;
+      const blended = rows.length >= 6 ? observed * 0.75 + anchor * 0.25 : anchor;
+      value = shrink(blended, prior, rows.length, shrinkK[p.pos] ?? 4);
+      basis = `${rows.length} game${rows.length === 1 ? '' : 's'}${adp != null ? ' + ADP' : ''}`;
+    } else if (adp != null) {
+      value = adpCurve(p.pos, adp);
+      basis = `ADP ${adp.toFixed(1)} (no games played)`;
+    } else {
+      value = prior;
+      basis = 'positional prior (no data)';
+    }
+
+    // Availability discounts a season-long valuation, but not to zero — an
+    // injured player still has trade and stash value.
+    const status = (p.status || '').toUpperCase();
+    if (['O', 'IR', 'PUP', 'SUSP'].includes(status)) value *= 0.3;
+    else if (status === 'D') value *= 0.75;
+    else if (status === 'Q') value *= 0.94;
+
+    return {
+      player_id: p.player_id,
+      name: p.name,
+      pos: p.pos,
+      nfl_team: p.nfl_team,
+      bye_week: p.bye_week,
+      status: p.status || '',
+      adp,
+      mean: Math.max(0, value),
+      seasonMean: Math.max(0, value),
+      sd: Math.max(0.5, value * 0.35),
+      games: rows.length,
+      basis,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
