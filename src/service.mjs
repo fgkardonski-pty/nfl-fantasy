@@ -14,6 +14,7 @@ import { optimalLineup } from './engine/optimizer.mjs';
 import { simulateMatchup, simulateSeason, teamWeekDistribution, roundRobinSchedule } from './engine/simulate.mjs';
 import { optimizeForWinProbability, posture } from './engine/leverage.mjs';
 import { computeVor, replacementLevels, tierize, tierSummary } from './engine/vor.mjs';
+import { expectedPointsAtRank } from './engine/statline.mjs';
 import { rankWaiverTargets, breakoutScan, worstDroppable } from './engine/waivers.mjs';
 import { scanLeague, evaluateOffer } from './engine/trades.mjs';
 import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachTargets, positionalNeed } from './engine/opponent.mjs';
@@ -196,17 +197,43 @@ function persistProjections(leagueKey, season, week, projections) {
  */
 export function draftValues(league, players) {
   const season = league.season;
-  const priors = { QB: 15, RB: 9, WR: 9, TE: 6.5, K: 7.5, DEF: 6.5 };
   const shrinkK = { QB: 3, RB: 3.5, WR: 4, TE: 4, K: 5, DEF: 5 };
 
-  // ADP -> expected per-game points. Calibrated so the 1.01 pick sits near an
-  // elite season and value decays through the draft, per position.
-  const adpCurve = (pos, adp) => {
-    const prior = priors[pos] ?? 9;
-    const peak = { QB: 1.55, RB: 2.35, WR: 2.25, TE: 2.1, K: 1.15, DEF: 1.2 }[pos] ?? 2;
-    // Exponential decay with a ~60-pick half life, floored at replacement-ish.
-    const factor = 0.55 + (peak - 0.55) * Math.exp(-Math.max(0, adp - 1) / 60);
-    return prior * factor;
+  // Positional rank from ADP: sort each position's ADP-ranked players and use
+  // their order within the position. This is what turns a global consensus
+  // ranking into "he is the RB7", which is the input the archetype curves need.
+  const posRankOf = new Map();
+  {
+    const withAdp = players
+      .map((p) => ({ id: p.player_id, pos: p.pos, adp: adpOf(p.player_id, season) }))
+      .filter((x) => x.adp != null)
+      .sort((a, b) => a.adp - b.adp);
+    const counters = {};
+    for (const x of withAdp) {
+      counters[x.pos] = (counters[x.pos] ?? 0) + 1;
+      posRankOf.set(x.id, counters[x.pos]);
+    }
+  }
+
+  // Replacement-ish rank per position, used only when a player has no ADP at
+  // all — the market has no opinion, so assume roster-filler production rather
+  // than inventing a rank.
+  const UNRANKED = { QB: 30, RB: 55, WR: 80, TE: 32, K: 28, DEF: 28 };
+
+  /**
+   * Expected per-game points for a player, priced in THIS LEAGUE'S scoring.
+   *
+   * The previous implementation multiplied a fixed positional prior (QB 15,
+   * RB 9, ...) by an ADP decay curve — which never looked at the league's
+   * scoring rules at all. In a league paying per completion, per first down and
+   * 6 per passing touchdown that understated quarterbacks by more than half,
+   * because none of those categories exist in the generic scoring those priors
+   * were calibrated against.
+   */
+  const adpCurve = (pos, adp, playerId) => {
+    const rank = posRankOf.get(playerId)
+      ?? (adp != null ? Math.max(1, Math.round(adp / 3)) : (UNRANKED[pos] ?? 60));
+    return expectedPointsAtRank(pos, rank, league.scoring);
   };
 
   return players.map((p) => {
@@ -214,7 +241,7 @@ export function draftValues(league, players) {
       'SELECT week, stats FROM player_stats WHERE player_id = ? AND season = ? ORDER BY week DESC',
       [p.player_id, season]
     );
-    const prior = priors[p.pos] ?? 9;
+    const prior = expectedPointsAtRank(p.pos, UNRANKED[p.pos] ?? 60, league.scoring);
     const adp = adpOf(p.player_id, season);
 
     let value;
@@ -225,16 +252,17 @@ export function draftValues(league, players) {
       const observed = pts.reduce((a, x, i) => a + x * w[i], 0) / w.reduce((a, b) => a + b, 0);
       // When ADP exists, blend it in as a prior rather than discarding it: it
       // encodes talent and situation that a short sample cannot.
-      const anchor = adp != null ? (observed + adpCurve(p.pos, adp)) / 2 : observed;
+      const anchor = adp != null ? (observed + adpCurve(p.pos, adp, p.player_id)) / 2 : observed;
       const blended = rows.length >= 6 ? observed * 0.75 + anchor * 0.25 : anchor;
       value = shrink(blended, prior, rows.length, shrinkK[p.pos] ?? 4);
       basis = `${rows.length} game${rows.length === 1 ? '' : 's'}${adp != null ? ' + ADP' : ''}`;
     } else if (adp != null) {
-      value = adpCurve(p.pos, adp);
-      basis = `ADP ${adp.toFixed(1)} (no games played)`;
+      value = adpCurve(p.pos, adp, p.player_id);
+      const rank = posRankOf.get(p.player_id);
+      basis = `ADP ${adp.toFixed(1)} -> ${p.pos}${rank ?? '?'}, priced in league scoring`;
     } else {
-      value = prior;
-      basis = 'positional prior (no data)';
+      value = expectedPointsAtRank(p.pos, UNRANKED[p.pos] ?? 60, league.scoring);
+      basis = 'unranked (no ADP) — priced as roster filler in league scoring';
     }
 
     // Availability discounts a season-long valuation, but not to zero — an

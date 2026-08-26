@@ -1,0 +1,105 @@
+{
+  "_source": "Yahoo league 441056 FANTAZY FULZBOL — Scoring & Settings page, entered by hand while Fantasy Sports API access is under review.",
+
+  "leagueKey": "yahoo.l.441056",
+  "name": "FANTAZY FULZBOL",
+  "season": 2026,
+  "numTeams": 16,
+  "myTeamName": "McGiver",
+
+  "_roster": "Yahoo lists: QB, WR, RB, TE, W/T, W/R, K, DEF, BN x5, IR x2. Note TWO separate flex slots with different eligibility, not one combined flex.",
+  "rosterSlots": [
+    { "slot": "QB",  "count": 1 },
+    { "slot": "WR",  "count": 1 },
+    { "slot": "RB",  "count": 1 },
+    { "slot": "TE",  "count": 1 },
+    { "slot": "W/T", "count": 1 },
+    { "slot": "W/R", "count": 1 },
+    { "slot": "K",   "count": 1 },
+    { "slot": "DEF", "count": 1 },
+    { "slot": "BN",  "count": 5 },
+    { "slot": "IR",  "count": 2 }
+  ],
+
+  "_playoffs": "8 teams, weeks 15-17, reseeded each round.",
+  "numPlayoffTeams": 8,
+  "playoffStartWeek": 15,
+  "endWeek": 17,
+
+  "_waivers": "Weekly rolling list based on standings — NOT FAAB. Continuous processing. faabBudget is therefore unused for bidding; waiver priority governs claims.",
+  "waiverType": "priority",
+  "faabBudget": 0,
+
+  "scoring": {
+    "_passing": "0.5/completion and 0.5/first down are the two categories generic rankings ignore entirely, and together they are worth ~19 pts/game to an elite QB.",
+    "pass_cmp": 0.5,
+    "pass_yd": 0.04,
+    "pass_td": 6,
+    "pass_int": -1,
+    "pick_six_thrown": -2,
+    "pass_first_down": 0.5,
+    "pass_cmp_40": 2,
+    "pass_td_40": 3,
+
+    "_rushing": "0.2 per carry rewards volume backs beyond their yardage.",
+    "rush_att": 0.2,
+    "rush_yd": 0.1,
+    "rush_td": 6,
+    "rush_first_down": 0.5,
+    "rush_40": 2,
+    "rush_td_40": 3,
+
+    "_receiving": "Half PPR, but the 0.5 first-down bonus pushes possession receivers close to full PPR in practice.",
+    "rec": 0.5,
+    "rec_yd": 0.1,
+    "rec_td": 6,
+    "rec_first_down": 0.5,
+    "rec_40": 2,
+    "rec_td_40": 3,
+
+    "_misc": "Return yards score 0.5/yd for skill players per the QB/RB/WR/TE tables.",
+    "ret_yd": 0.5,
+    "ret_td": 6,
+    "two_pt": 2,
+    "fum_lost": -2,
+    "fum_ret_td": 6,
+
+    "_kicking": "Only sub-20 misses are penalised; longer misses cost nothing.",
+    "fg_0_19": 3,
+    "fg_20_29": 3,
+    "fg_30_39": 3,
+    "fg_40_49": 4,
+    "fg_50p": 6,
+    "fg_miss_0_19": -2,
+    "pat_made": 1,
+
+    "_defense": "Notably inflated vs Yahoo defaults: 2/sack (vs 1), 16 for a shutout (vs 10). Defenses are worth more here than in a standard league.",
+    "def_sack": 2,
+    "def_int": 2,
+    "def_fum_rec": 2,
+    "def_td": 6,
+    "def_safety": 2,
+    "def_block": 2,
+    "def_ret_td": 6,
+    "def_ret_yd": 0.1,
+    "def_pa_0": 16,
+    "def_pa_1_6": 8,
+    "def_pa_7_13": 6,
+    "def_pa_14_20": 2,
+    "def_pa_21_27": 0,
+    "def_pa_28_34": -1,
+    "def_pa_35p": -6,
+    "def_4th_down_stop": 1,
+    "def_tfl": 1,
+    "def_yds_neg": 6,
+    "def_xp_returned": 2,
+
+    "_bonuses": "INTERPRETATION FLAG: Yahoo shows these as '10 yards per point; 1 points at 50 yards'. Read as a flat +1 once the player crosses the threshold in a game, ON TOP of the per-yard rate. If it actually means something else, change or delete these entries — nothing else depends on them.",
+    "bonuses": [
+      { "stat": "pass_yd",     "threshold": 50, "points": 1 },
+      { "stat": "rush_yd",     "threshold": 50, "points": 1 },
+      { "stat": "rec_yd",      "threshold": 50, "points": 1 },
+      { "stat": "def_ret_yd",  "threshold": 30, "points": 1 }
+    ]
+  }
+}

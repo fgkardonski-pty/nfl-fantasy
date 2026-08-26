@@ -64,6 +64,32 @@ export const YAHOO_STAT_IDS = {
   80: 'pass_first_down',
 };
 
+/**
+ * Canonical keys for scoring categories Yahoo supports but whose numeric stat
+ * ids we have not confirmed against a live response.
+ *
+ * These are listed so a hand-entered league config can use readable names, and
+ * so the scoring engine prices them correctly. They are deliberately NOT given
+ * guessed entries in YAHOO_STAT_IDS: an unknown id already falls through to
+ * `stat_<id>` safely, whereas a wrong id would silently attach a scoring rule
+ * to the wrong statistic — a much worse failure than an unmapped one.
+ */
+export const EXTRA_STAT_KEYS = [
+  'pass_cmp_40',   // 40+ yard completions
+  'pass_td_40',    // 40+ yard passing touchdowns
+  'rush_40',       // 40+ yard runs
+  'rush_td_40',    // 40+ yard rushing touchdowns
+  'rec_40',        // 40+ yard receptions
+  'rec_td_40',     // 40+ yard receiving touchdowns
+  'pick_six_thrown',
+  'fg_miss_0_19', 'fg_miss_20_29', 'fg_miss_30_39', 'fg_miss_40_49', 'fg_miss_50p',
+  'def_4th_down_stop',
+  'def_tfl',
+  'def_yds_neg',
+  'def_xp_returned',
+  'def_ret_yd',
+];
+
 /** A sane full-PPR default so demo mode and unauthenticated use still work. */
 export const DEFAULT_SCORING = {
   pass_yd: 0.04, pass_td: 4, pass_int: -1, two_pt: 2,
@@ -85,6 +111,7 @@ export const DEFAULT_SCORING = {
 export function scoringFromYahoo(statModifiers = []) {
   const out = {};
   for (const m of statModifiers) {
+    if (!m || typeof m !== 'object') continue;
     const id = Number(m.stat_id ?? m.statId);
     const val = Number(m.value);
     if (!Number.isFinite(val) || val === 0) continue;
@@ -105,9 +132,38 @@ export function scoringFromYahoo(statModifiers = []) {
 export function scoreStatLine(stats, scoring = DEFAULT_SCORING) {
   let pts = 0;
   for (const [key, per] of Object.entries(scoring)) {
+    if (key === 'bonuses') continue;
+    if (typeof per !== 'number') continue;
     const raw = stats[key];
     if (raw == null) continue;
-    pts += Number(raw) * Number(per);
+    pts += Number(raw) * per;
+  }
+  pts += scoreBonuses(stats, scoring);
+  return pts;
+}
+
+/**
+ * Threshold bonuses: a flat award once a stat crosses a line in a single game
+ * (for example "+1 point at 50 rushing yards"), on top of the per-yard rate.
+ *
+ * Distinct from a per-unit rule in two ways that matter: it fires once no
+ * matter how far past the line the player goes, and it does not fire at all
+ * below it. Treating it as a rate — the only shape the engine understood before
+ * — would hand a fraction of the bonus to every player who never reached the
+ * threshold, and cap nobody who blew past it.
+ *
+ * Scores ONE REAL GAME, so the test is deterministic. For an averaged stat line
+ * the bonus must instead be weighted by how often it would fire; that is
+ * expectedScore() in engine/statline.mjs.
+ */
+export function scoreBonuses(stats, scoring = DEFAULT_SCORING) {
+  const bonuses = scoring?.bonuses;
+  if (!Array.isArray(bonuses) || !bonuses.length) return 0;
+  let pts = 0;
+  for (const b of bonuses) {
+    const raw = stats?.[b.stat];
+    if (raw == null) continue;
+    if (Number(raw) >= Number(b.threshold)) pts += Number(b.points);
   }
   return pts;
 }
@@ -117,11 +173,24 @@ export function scoreBreakdown(stats, scoring = DEFAULT_SCORING) {
   const parts = [];
   let total = 0;
   for (const [key, per] of Object.entries(scoring)) {
+    if (key === 'bonuses' || typeof per !== 'number') continue;
     const raw = Number(stats[key] ?? 0);
     if (!raw) continue;
-    const pts = raw * Number(per);
+    const pts = raw * per;
     total += pts;
-    parts.push({ stat: key, raw, per: Number(per), points: pts });
+    parts.push({ stat: key, raw, per, points: pts });
+  }
+  // Bonuses appear as their own line items so the breakdown always sums to the
+  // same number scoreStatLine returns — an explanation that does not reconcile
+  // with the total is worse than no explanation.
+  for (const b of scoring?.bonuses ?? []) {
+    const raw = Number(stats?.[b.stat] ?? 0);
+    if (raw < Number(b.threshold)) continue;
+    const pts = Number(b.points);
+    total += pts;
+    parts.push({
+      stat: `${b.stat} ≥ ${b.threshold}`, raw, per: pts, points: pts, bonus: true,
+    });
   }
   parts.sort((a, b) => Math.abs(b.points) - Math.abs(a.points));
   return { total, parts };
