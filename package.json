@@ -1,0 +1,19 @@
+{
+  "name": "gridiron-oracle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A self-hosted, single-purpose war room built to win your Yahoo fantasy football league.",
+  "type": "module",
+  "engines": { "node": ">=22.5.0" },
+  "bin": { "oracle": "./bin/oracle.mjs" },
+  "scripts": {
+    "start": "node bin/oracle.mjs serve",
+    "demo": "node bin/oracle.mjs demo && node bin/oracle.mjs serve",
+    "seed": "node bin/oracle.mjs demo",
+    "sync": "node bin/oracle.mjs sync",
+    "research": "node bin/oracle.mjs research",
+    "test": "node --test --experimental-sqlite test/"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
