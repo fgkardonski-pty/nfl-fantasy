@@ -199,6 +199,8 @@ export function projectPlayer(player, ctx) {
     player_id: player.player_id,
     name: player.name,
     pos,
+    // Carried through so the optimizer sees the same eligibility the league does.
+    eligible_positions: player.eligible_positions ?? null,
     nfl_team: player.nfl_team,
     opponent: game?.opponent ?? (onBye ? 'BYE' : null),
     isHome: game?.isHome ?? null,

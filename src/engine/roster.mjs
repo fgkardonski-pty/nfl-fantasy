@@ -42,6 +42,61 @@ export function canFill(slot, pos) {
   return eligiblePositions(slot).includes(pos);
 }
 
+/**
+ * Parse a player's eligibility into a set of position codes.
+ * Accepts a JSON string, an array, or Yahoo's comma-delimited display_position
+ * ("WR,RB"), because all three forms reach us from different code paths.
+ */
+export function parseEligibility(value) {
+  if (!value) return [];
+  let list = value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[')) {
+      try { list = JSON.parse(trimmed); } catch { list = []; }
+    } else {
+      list = trimmed.split(',');
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((x) => (typeof x === 'string' ? x : x?.position))
+    .filter(Boolean)
+    .map((x) => String(x).trim().toUpperCase())
+    .map((x) => (x === 'DST' || x === 'D/ST' ? 'DEF' : x))
+    // Only real position and slot codes survive. Malformed input must not
+    // become a phantom eligibility entry — it would never match a slot, but it
+    // would sit in the data looking like a fact.
+    .filter((x) => KNOWN_CODES.has(x));
+}
+
+/** Every code that can legitimately appear in an eligibility list. */
+const KNOWN_CODES = new Set([...POSITIONS, ...Object.keys(SLOT_ELIGIBILITY)]);
+
+/**
+ * Can THIS player fill THIS slot?
+ *
+ * Yahoo publishes a per-player eligibility list that is authoritative and that
+ * a player's primary position does not always imply — a receiver who also has
+ * running back eligibility can legally fill an RB slot. Where that list is
+ * present we honour it; where it is absent (demo data, other providers) we fall
+ * back to position-based rules.
+ */
+export function playerCanFill(slot, player) {
+  const slotPositions = eligiblePositions(slot);
+  if (!slotPositions.length) return false;
+
+  const declared = parseEligibility(player?.eligible_positions);
+  if (declared.length) {
+    // Yahoo lists both real positions ("RB") and slot codes ("W/R/T"), so a
+    // direct slot match counts, as does any overlap with what the slot accepts.
+    if (declared.includes(slot)) return true;
+    if (declared.some((pos) => slotPositions.includes(pos))) return true;
+    return false;
+  }
+  return slotPositions.includes(player?.pos);
+}
+
 export function isStartingSlot(slot) {
   return !BENCH_SLOTS.has(slot) && eligiblePositions(slot).length > 0;
 }

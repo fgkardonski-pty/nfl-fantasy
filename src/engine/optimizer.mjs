@@ -11,7 +11,7 @@
  * couple dozen, so it is instant), which guarantees the true optimum under any
  * slot configuration including SUPERFLEX and custom commissioner setups.
  */
-import { eligiblePositions, startingSlots, slotLabel } from './roster.mjs';
+import { eligiblePositions, playerCanFill, startingSlots, slotLabel } from './roster.mjs';
 
 const BIG = 1e9;
 
@@ -98,14 +98,11 @@ export function optimalLineup(players, slots, value = (p) => p.mean ?? 0) {
   const pool = [...players];
   while (pool.length < rows) pool.push({ player_id: `__empty_${pool.length}`, pos: '__', name: '(empty)', __phantom: true });
 
-  const cost = starting.map((slot) => {
-    const elig = eligiblePositions(slot);
-    return pool.map((pl) => {
-      if (pl.__phantom) return BIG / 2;           // fillable, but worth nothing
-      if (!elig.includes(pl.pos)) return BIG;      // ineligible
-      return -value(pl);                           // maximise value => minimise -value
-    });
-  });
+  const cost = starting.map((slot) => pool.map((pl) => {
+    if (pl.__phantom) return BIG / 2;              // fillable, but worth nothing
+    if (!playerCanFill(slot, pl)) return BIG;      // ineligible for this slot
+    return -value(pl);                             // maximise value => minimise -value
+  }));
 
   const { assignment } = hungarian(cost);
 

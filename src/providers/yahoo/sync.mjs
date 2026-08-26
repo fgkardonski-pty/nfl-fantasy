@@ -216,11 +216,48 @@ function selectedSlot(p) {
   return sp.position ?? 'BN';
 }
 
+/**
+ * Yahoo's position fields, handled precisely:
+ *
+ *   primary_position   a single code — the player's actual position
+ *   display_position   a COMMA LIST for multi-eligible players ("WR,RB")
+ *   eligible_positions the authoritative list of slots he may fill
+ *
+ * Storing display_position as `pos` is wrong: "WR,RB" matches no slot, so a
+ * multi-eligible player becomes unstartable everywhere and silently disappears
+ * from the lineup. `pos` takes the primary position (falling back to the first
+ * token of the display list), and the full eligibility list is kept alongside.
+ */
+function positionsFor(p) {
+  const eligible = [];
+  const raw = p.eligible_positions;
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  for (const item of list) {
+    const code = typeof item === 'string' ? item : (item?.position ?? item?.eligible_position?.position);
+    if (code) eligible.push(normalisePosition(code));
+  }
+
+  const display = String(p.display_position ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const primary = normalisePosition(p.primary_position ?? display[0] ?? eligible[0] ?? '');
+
+  // Fold the display list into eligibility so a multi-position player is still
+  // handled correctly even when eligible_positions is missing.
+  for (const d of display) {
+    const code = normalisePosition(d);
+    if (code && !eligible.includes(code)) eligible.push(code);
+  }
+  if (primary && !eligible.includes(primary)) eligible.unshift(primary);
+
+  return { pos: primary, eligible };
+}
+
 function toPlayerRow(p) {
+  const { pos, eligible } = positionsFor(p);
   return {
     player_id: pid(p.player_id),
     name: p.name?.full ?? str(p.name, 'Unknown'),
-    pos: normalisePosition(p.display_position ?? p.primary_position),
+    pos,
+    eligible_positions: eligible.length ? JSON.stringify(eligible) : null,
     nfl_team: str(p.editorial_team_abbr ?? p.editorial_team_key)?.toUpperCase() ?? null,
     bye_week: num(p.bye_weeks?.week ?? p.bye_weeks),
     status: normaliseStatus(p.status),

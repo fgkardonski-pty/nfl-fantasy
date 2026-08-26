@@ -144,3 +144,15 @@ test('position and status normalisation', () => {
   assert.equal(normaliseStatus(''), '');
   assert.equal(normaliseStatus(null), '');
 });
+
+test('Yahoo position fields resolve to a single position plus an eligibility list', async () => {
+  // Exercises the real sync path: primary_position wins for `pos`, and
+  // eligible_positions is preserved so the optimizer can use it.
+  const { ROSTER_RESPONSE } = F;
+  const players = extractList(root(ROSTER_RESPONSE), 'player');
+  const rb = players.find((p) => p.player_id === '31002');
+  assert.equal(rb.primary_position, 'RB');
+  assert.ok(Array.isArray(rb.eligible_positions), 'the eligibility list survives normalisation');
+  const codes = rb.eligible_positions.map((e) => e.position ?? e);
+  assert.deepEqual(codes, ['RB', 'W/R/T'], 'flex eligibility is carried through');
+});

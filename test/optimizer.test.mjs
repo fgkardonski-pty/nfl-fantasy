@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { hungarian, optimalLineup, lineupMarginals, closeCalls } from '../src/engine/optimizer.mjs';
-import { eligiblePositions, positionalDemand, startingSlots, expandSlots, canFill } from '../src/engine/roster.mjs';
+import { eligiblePositions, positionalDemand, startingSlots, expandSlots, canFill, playerCanFill, parseEligibility } from '../src/engine/roster.mjs';
 import { Rng } from '../src/util/rng.mjs';
 
 /** Exhaustive search over every legal slot assignment. */
@@ -172,4 +172,72 @@ test('positionalDemand scales with league size and counts flex fractionally', ()
   assert.ok(perTeam.RB > 2 && perTeam.RB < 2.6, 'flex adds partial running back demand');
   assert.equal(leagueWide.QB, 12);
   assert.ok(leagueWide.RB > 24);
+});
+
+// ---------------------------------------------------------------------------
+// Multi-position eligibility.
+//
+// Yahoo publishes a per-player eligibility list that a player's primary
+// position does not always imply. Storing only the position — or storing
+// Yahoo's comma-delimited display_position as if it were one — makes such a
+// player unstartable in every slot, so he silently vanishes from the lineup.
+// ---------------------------------------------------------------------------
+
+test('parseEligibility accepts every form the codebase produces', () => {
+  assert.deepEqual(parseEligibility('["WR","RB","W/R/T"]'), ['WR', 'RB', 'W/R/T']);
+  assert.deepEqual(parseEligibility(['WR', 'RB']), ['WR', 'RB']);
+  assert.deepEqual(parseEligibility('WR,RB'), ['WR', 'RB'], "Yahoo's comma display form");
+  assert.deepEqual(parseEligibility([{ position: 'TE' }]), ['TE'], 'Yahoo object form');
+  assert.deepEqual(parseEligibility('DST'), ['DEF'], 'defense aliases normalise');
+  assert.deepEqual(parseEligibility(null), []);
+  assert.deepEqual(parseEligibility('not json ['), []);
+});
+
+test('playerCanFill honours a declared eligibility list', () => {
+  const multi = { pos: 'WR', eligible_positions: '["WR","RB","W/R/T"]' };
+  assert.ok(playerCanFill('WR', multi));
+  assert.ok(playerCanFill('RB', multi), 'declared RB eligibility is honoured');
+  assert.ok(playerCanFill('W/R/T', multi));
+  assert.ok(!playerCanFill('QB', multi), 'eligibility is a whitelist, not a free pass');
+  assert.ok(!playerCanFill('BN', multi), 'bench is not a startable slot');
+});
+
+test('playerCanFill falls back to position rules when no list is present', () => {
+  const plain = { pos: 'WR' };
+  assert.ok(playerCanFill('WR', plain));
+  assert.ok(playerCanFill('W/R/T', plain));
+  assert.ok(!playerCanFill('RB', plain), 'a plain receiver still cannot fill an RB slot');
+});
+
+test('the optimizer actually exploits multi-position eligibility', () => {
+  // Without eligibility, the RB slot can only take the weak back and the flex
+  // takes the strong receiver: 8 + 20 = 28.
+  // With eligibility, the dual-eligible receiver fills RB and the flex takes
+  // the other receiver: 20 + 14 = 34.
+  const players = [
+    { player_id: 'dual', name: 'Dual', pos: 'WR', mean: 20, eligible_positions: '["WR","RB"]' },
+    { player_id: 'wr2', name: 'WR2', pos: 'WR', mean: 14 },
+    { player_id: 'rb', name: 'Weak RB', pos: 'RB', mean: 8 },
+  ];
+  const withElig = optimalLineup(players, ['RB', 'W/R/T'], (p) => p.mean);
+  assert.equal(withElig.total, 34);
+  assert.equal(withElig.lineup.find((l) => l.slot === 'RB').player.name, 'Dual');
+
+  const withoutElig = optimalLineup(
+    players.map(({ eligible_positions, ...rest }) => rest), ['RB', 'W/R/T'], (p) => p.mean
+  );
+  assert.equal(withoutElig.total, 28, 'without the eligibility list the lineup is strictly worse');
+});
+
+test('a comma-delimited position never makes a player unstartable', () => {
+  // This was the real bug: Yahoo returns display_position as "WR,RB" and
+  // storing that verbatim as `pos` matches no slot at all.
+  const broken = { player_id: 'x', name: 'Multi', pos: 'WR,RB' };
+  assert.ok(!playerCanFill('WR', broken), 'the raw comma form matches nothing — that is the bug');
+
+  const fixed = { player_id: 'x', name: 'Multi', pos: 'WR', eligible_positions: 'WR,RB' };
+  assert.ok(playerCanFill('WR', fixed));
+  assert.ok(playerCanFill('RB', fixed));
+  const { lineup } = optimalLineup([fixed], ['RB'], (p) => 10);
+  assert.equal(lineup[0].player.name, 'Multi', 'and now he starts');
 });

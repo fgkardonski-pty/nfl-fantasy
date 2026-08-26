@@ -278,6 +278,12 @@ Written down because a tool that overstates its confidence is worse than no tool
   transactions in the log, most managers will read as "Balanced" — correctly.
   The confidence score reflects that. On a demo league the model recovers 9 of
   12 intended manager types, and the three misses all carry low confidence.
+- **Multi-position eligibility now comes from Yahoo, but is untested live.**
+  Yahoo publishes a per-player eligibility list, and returns `display_position`
+  as a comma list ("WR,RB") for multi-eligible players. The sync stores the
+  primary position and the full eligibility list separately, and the optimizer
+  honours the list. This is covered by unit tests, but like the rest of the
+  Yahoo path it has not met the live API.
 - **Demo mode is synthetic.** Fictional players, simulated statistics. It exists
   so every engine is exercisable before you enter a credential — it is not a
   model of any real athlete, and the UI says so on every screen.

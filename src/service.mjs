@@ -248,6 +248,7 @@ export function draftValues(league, players) {
       player_id: p.player_id,
       name: p.name,
       pos: p.pos,
+      eligible_positions: p.eligible_positions ?? null,
       nfl_team: p.nfl_team,
       bye_week: p.bye_week,
       status: p.status || '',

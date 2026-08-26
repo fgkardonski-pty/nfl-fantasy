@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS players (
   age          REAL,
   years_exp    INTEGER,
   depth_rank   INTEGER,
+  -- Yahoo's authoritative eligibility list, e.g. ["RB","W/R/T"]. A player can be
+  -- eligible for slots his primary position does not imply, and the optimizer
+  -- must honour that or it will leave legal points on the bench.
+  eligible_positions TEXT,
   yahoo_key    TEXT,
   sleeper_id   TEXT,
   headshot     TEXT,
