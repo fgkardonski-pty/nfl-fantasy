@@ -132,17 +132,47 @@ clock?* The best pick is rarely the best player.
 
 ## Connecting Yahoo
 
-1. Create an app at [developer.yahoo.com/apps/create](https://developer.yahoo.com/apps/create/)
-   - **Application Type:** Web Application
-   - **Redirect URI:** `http://localhost:4317/auth/yahoo/callback`
-   - **API Permissions:** Fantasy Sports → Read *(or Read/Write to submit moves)*
-2. `cp .env.example .env` and fill in `YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET`,
-   and `ORACLE_SECRET`:
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-   ```
-3. `node bin/oracle.mjs serve`, open the **Data & Yahoo** page, click **Connect**.
-4. Click **Sync league now**.
+**1. Create a Yahoo app** at [developer.yahoo.com/apps/create](https://developer.yahoo.com/apps/create/)
+
+- **Application Type:** Web Application
+- **Redirect URI:** `http://localhost:4317/auth/yahoo/callback`
+- **API Permissions:** tick **Fantasy Sports** → Read *(or Read/Write to submit moves)*
+
+> **If Yahoo rejects that redirect URI**, it is being strict about HTTPS. Enter
+> `https://localhost:4317/auth/yahoo/callback` instead and use the paste-the-code
+> flow in step 4 — the callback never has to actually load for the connection to
+> work.
+
+**2. Configure the app**
+
+```bash
+cp .env.example .env
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # → ORACLE_SECRET
+```
+
+Put your Client ID, Client Secret and that generated secret into `.env`.
+
+**3. Start it**
+
+```bash
+node bin/oracle.mjs serve      # → http://127.0.0.1:4317
+```
+
+**4. Connect** — open **Data & Yahoo** and click **Connect Yahoo**.
+
+If the redirect fails to load, expand *"The button above did not work?"* and use
+the paste flow: click **get the authorisation link**, approve in the browser,
+then paste your address bar back in. The code is in that URL whether or not the
+page renders.
+
+The same flow on the command line:
+
+```bash
+node bin/oracle.mjs yahoo connect                      # prints the link
+node bin/oracle.mjs yahoo code "<paste the whole URL>" # finishes it
+```
+
+**5. Sync** — click **Sync league now**, or `node bin/oracle.mjs yahoo sync`.
 
 The platform then pulls your league settings and **exact scoring rules**, every
 team, every roster, the full transaction log with FAAB bids, matchups,
@@ -175,6 +205,8 @@ node bin/oracle.mjs trades            # win-win trades and arbitrage, with the p
 node bin/oracle.mjs intel             # rival dossiers and predicted claims
 node bin/oracle.mjs outlook           # playoff and championship odds
 node bin/oracle.mjs draft --slot 4    # live draft board with VOR, VONA and tiers
+node bin/oracle.mjs yahoo connect     # print the Yahoo authorisation link
+node bin/oracle.mjs yahoo code "<url>"  # finish the connection by pasting the redirect
 node bin/oracle.mjs yahoo sync        # pull your league
 node bin/oracle.mjs research          # run every research job once
 node bin/oracle.mjs research daemon   # run the scheduler in the foreground

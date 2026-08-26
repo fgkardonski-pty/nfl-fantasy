@@ -332,6 +332,33 @@ export function buildApi() {
     }
   });
 
+  /**
+   * Manual connection, for when Yahoo will not redirect to a plain-HTTP
+   * localhost callback. Returns the authorisation URL; the operator approves in
+   * the browser and pastes back whatever the address bar ends up showing.
+   */
+  r.post('/api/yahoo/manual/start', ({ body }) => {
+    if (!config.secret) {
+      throw httpError(400, 'ORACLE_SECRET is not set.',
+        'Credentials are encrypted at rest and refuse to be stored without a key.');
+    }
+    const { url, state } = oauth.authorizeUrl({ access: body?.write ? 'write' : 'read' });
+    return { url, state, expiresInMinutes: 15 };
+  });
+
+  r.post('/api/yahoo/manual/finish', async ({ body }) => {
+    const pasted = body?.pasted ?? body?.code;
+    if (!pasted) throw httpError(400, 'Paste the redirect URL, or just the code.');
+    const { code, state } = oauth.parseCallbackInput(pasted);
+    if (!code) {
+      throw httpError(400, 'No authorisation code found in that input.',
+        'Paste the whole address bar contents from after you approved access — it contains "code=".');
+    }
+    await oauth.exchangeCode(code, state);
+    const leagues = await yahoo.myLeagues().catch(() => []);
+    return { connected: true, leagues };
+  });
+
   r.post('/api/yahoo/disconnect', () => oauth.disconnect());
 
   r.get('/api/yahoo/leagues', async () => ({ leagues: await yahoo.myLeagues() }));

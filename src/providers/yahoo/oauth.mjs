@@ -12,20 +12,50 @@
  * written to the database, and it is never logged or returned over the API.
  */
 import config from '../../config.mjs';
-import { get, run } from '../../db/index.mjs';
+import { get, run, meta } from '../../db/index.mjs';
 import { encrypt, decrypt, pkcePair, randomToken, timingSafeEqual } from '../../util/crypto.mjs';
 import { request } from '../../util/http.mjs';
 import { logger } from '../../util/log.mjs';
 
 const log = logger('yahoo-oauth');
 
-/** Pending authorisation attempts: state -> {verifier, createdAt}. In-memory by design. */
+/**
+ * Pending authorisation attempts: state -> {verifier, createdAt}.
+ *
+ * Held in memory AND persisted, because the two halves of the flow do not
+ * always happen in the same process: you can start the connection in the web UI
+ * and finish it on the command line, or restart the server between the two. The
+ * PKCE verifier is a single-use, short-lived nonce — not a credential — and it
+ * is deleted the moment it is redeemed or expires.
+ */
 const pending = new Map();
-const STATE_TTL_MS = 10 * 60 * 1000;
+const STATE_TTL_MS = 15 * 60 * 1000;
+const PENDING_KEY = 'yahoo_oauth_pending';
+
+function loadPending() {
+  const stored = meta.getJson(PENDING_KEY, {});
+  const now = Date.now();
+  for (const [state, entry] of Object.entries(stored)) {
+    if (entry && now - entry.createdAt <= STATE_TTL_MS && !pending.has(state)) {
+      pending.set(state, entry);
+    }
+  }
+}
+
+function savePending() {
+  const out = {};
+  for (const [state, entry] of pending) out[state] = entry;
+  meta.set(PENDING_KEY, out);
+}
 
 function sweepPending() {
+  loadPending();
   const now = Date.now();
-  for (const [k, v] of pending) if (now - v.createdAt > STATE_TTL_MS) pending.delete(k);
+  let changed = false;
+  for (const [k, v] of pending) {
+    if (now - v.createdAt > STATE_TTL_MS) { pending.delete(k); changed = true; }
+  }
+  if (changed) savePending();
 }
 
 /**
@@ -43,6 +73,7 @@ export function authorizeUrl({ access = 'read' } = {}) {
   const state = randomToken(24);
   const { verifier, challenge, method } = pkcePair();
   pending.set(state, { verifier, createdAt: Date.now() });
+  savePending();
 
   const params = new URLSearchParams({
     client_id: config.yahoo.clientId,
@@ -56,14 +87,62 @@ export function authorizeUrl({ access = 'read' } = {}) {
   return { url: `${config.yahoo.authUrl}?${params}`, state };
 }
 
-/** Exchange an authorisation code for tokens and store them encrypted. */
+/**
+ * Pull the code and state out of whatever the operator pasted.
+ *
+ * Yahoo may refuse to redirect to a plain-HTTP localhost callback, in which case
+ * the browser lands on an error page whose ADDRESS BAR still contains the
+ * authorisation code. Accepting the whole pasted URL — or just the bare code —
+ * means that restriction can never strand someone mid-setup.
+ */
+export function parseCallbackInput(input) {
+  const text = String(input ?? '').trim();
+  if (!text) return { code: null, state: null };
+  if (text.includes('?') || text.includes('code=')) {
+    try {
+      const url = new URL(text.startsWith('http') ? text : `http://x/?${text.replace(/^\?/, '')}`);
+      return { code: url.searchParams.get('code'), state: url.searchParams.get('state') };
+    } catch { /* fall through to treating it as a bare code */ }
+  }
+  return { code: text, state: null };
+}
+
+/**
+ * Exchange an authorisation code for tokens and store them encrypted.
+ * `state` is optional: when only one authorisation is in flight — the normal
+ * case for a single-operator tool — the pending verifier is unambiguous.
+ */
 export async function exchangeCode(code, state) {
   sweepPending();
   let verifier = null;
-  for (const [k, v] of pending) {
-    if (timingSafeEqual(k, state)) { verifier = v.verifier; pending.delete(k); break; }
+  let matchedState = null;
+
+  if (state) {
+    for (const [k, v] of pending) {
+      if (timingSafeEqual(k, state)) { verifier = v.verifier; matchedState = k; break; }
+    }
+    if (!verifier) {
+      throw new Error(
+        'That authorisation state does not match any connection this server started. ' +
+        'Start the connection again — the link is valid for 15 minutes.'
+      );
+    }
+  } else if (pending.size === 1) {
+    // Manual paste of a bare code: exactly one attempt is in flight, so there
+    // is no ambiguity about which verifier belongs to it.
+    [matchedState] = [...pending.keys()];
+    verifier = pending.get(matchedState).verifier;
+  } else if (pending.size === 0) {
+    throw new Error('No Yahoo connection is in progress. Start one first, then paste the code.');
+  } else {
+    throw new Error(
+      `${pending.size} Yahoo connections are in progress. Paste the full redirect URL ` +
+      '(which carries the state), or start a fresh connection.'
+    );
   }
-  if (!verifier) throw new Error('Invalid or expired OAuth state. Start the connection again from the dashboard.');
+
+  pending.delete(matchedState);
+  savePending();
 
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -153,5 +232,10 @@ export function connectionStatus() {
 
 export function disconnect() {
   run("DELETE FROM oauth_tokens WHERE provider = 'yahoo'");
+  pending.clear();
+  meta.set(PENDING_KEY, {});
   return { disconnected: true };
 }
+
+/** How many authorisations are waiting to be completed. */
+export const pendingCount = () => { sweepPending(); return pending.size; };

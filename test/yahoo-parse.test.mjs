@@ -156,3 +156,54 @@ test('Yahoo position fields resolve to a single position plus an eligibility lis
   const codes = rb.eligible_positions.map((e) => e.position ?? e);
   assert.deepEqual(codes, ['RB', 'W/R/T'], 'flex eligibility is carried through');
 });
+
+// ---------------------------------------------------------------------------
+// The manual connection fallback.
+//
+// Yahoo may refuse to redirect to a plain-HTTP localhost callback. When that
+// happens the browser still lands on a URL carrying the authorisation code, so
+// accepting a pasted address bar is what keeps that restriction from stranding
+// someone mid-setup.
+// ---------------------------------------------------------------------------
+
+test('parseCallbackInput accepts every form an operator might paste', async () => {
+  const { parseCallbackInput } = await import('../src/providers/yahoo/oauth.mjs');
+
+  assert.deepEqual(
+    parseCallbackInput('http://localhost:4317/auth/yahoo/callback?code=abc123&state=xyz789'),
+    { code: 'abc123', state: 'xyz789' }, 'a full redirect URL');
+
+  assert.deepEqual(
+    parseCallbackInput('https://example.com/cb?state=xyz789&code=abc123'),
+    { code: 'abc123', state: 'xyz789' }, 'parameter order does not matter');
+
+  assert.deepEqual(
+    parseCallbackInput('?code=abc123&state=xyz789'),
+    { code: 'abc123', state: 'xyz789' }, 'a bare query string');
+
+  assert.deepEqual(
+    parseCallbackInput('  abc123  '),
+    { code: 'abc123', state: null }, 'a bare code, whitespace trimmed');
+
+  assert.deepEqual(parseCallbackInput(''), { code: null, state: null });
+  assert.deepEqual(parseCallbackInput(null), { code: null, state: null });
+  assert.deepEqual(parseCallbackInput(undefined), { code: null, state: null });
+});
+
+test('exchangeCode refuses an unknown state rather than guessing', async () => {
+  const { exchangeCode } = await import('../src/providers/yahoo/oauth.mjs');
+  await assert.rejects(
+    () => exchangeCode('somecode', 'a-state-nobody-issued'),
+    /does not match any connection|No Yahoo connection/,
+    'a forged or stale state is rejected with an actionable message'
+  );
+});
+
+test('exchangeCode explains itself when nothing is in flight', async () => {
+  const { exchangeCode } = await import('../src/providers/yahoo/oauth.mjs');
+  await assert.rejects(
+    () => exchangeCode('somecode'),
+    /No Yahoo connection is in progress/,
+    'pasting a code with no pending authorisation says exactly that'
+  );
+});

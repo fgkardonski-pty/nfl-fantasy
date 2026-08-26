@@ -235,7 +235,7 @@ const COMMANDS = {
     }
   },
 
-  async yahoo(opts, sub) {
+  async yahoo(opts, sub, positional = []) {
     const action = sub ?? 'status';
     if (action === 'status') {
       const s = oauth.connectionStatus();
@@ -256,6 +256,38 @@ const COMMANDS = {
       }
       return;
     }
+    if (action === 'connect') {
+      const { url } = oauth.authorizeUrl({ access: opts.write ? 'write' : 'read' });
+      rule('CONNECT YAHOO');
+      out('  1. Open this URL in your browser and approve access:\n');
+      out(`     ${c.cyan}${url}${c.reset}\n`);
+      out(`  2. Yahoo sends you back to a callback URL. It may fail to load — ${c.bold}that is fine${c.reset}.`);
+      out('     Copy the ENTIRE address from your browser\'s address bar.\n');
+      out(`  3. Finish the connection:\n`);
+      out(`     ${c.cyan}node bin/oracle.mjs yahoo code "<paste the whole URL here>"${c.reset}\n`);
+      out(`  ${c.grey}The link is valid for 15 minutes.${c.reset}`);
+      return;
+    }
+    if (action === 'code') {
+      const pasted = positional?.[1] ?? opts.code;
+      if (!pasted) {
+        out(`${c.red}Paste the redirect URL or the code:${c.reset} node bin/oracle.mjs yahoo code "<url or code>"`);
+        process.exit(1);
+      }
+      const { code, state } = oauth.parseCallbackInput(pasted);
+      if (!code) { out(`${c.red}No authorisation code found in that input.${c.reset}`); process.exit(1); }
+      await oauth.exchangeCode(code, state);
+      out(`${c.green}✓ Yahoo connected.${c.reset}`);
+      const leagues = await yahooClient.myLeagues();
+      if (!leagues.length) {
+        out(`${c.yellow}No NFL leagues found on this account for the current season.${c.reset}`);
+        return;
+      }
+      rule('YOUR LEAGUES');
+      for (const l of leagues) out(`  ${c.cyan}${pad(l.league_key, 20)}${c.reset}${pad(l.name, 34)}${l.num_teams} teams · week ${l.current_week}`);
+      out(`\n  Next: ${c.cyan}node bin/oracle.mjs yahoo sync --league <key>${c.reset}`);
+      return;
+    }
     if (action === 'leagues') {
       const leagues = await yahooClient.myLeagues();
       rule('YOUR YAHOO LEAGUES');
@@ -272,10 +304,10 @@ const COMMANDS = {
       out(report.ok ? `${c.green}✓ sync complete${c.reset} (${report.ms}ms)` : `${c.yellow}⚠ partial sync${c.reset} — ${report.errors.length} stage(s) failed`);
       return;
     }
-    out(`${c.red}Unknown yahoo action "${action}". Try: status | leagues | sync${c.reset}`);
+    out(`${c.red}Unknown yahoo action "${action}". Try: status | connect | code | leagues | sync${c.reset}`);
   },
 
-  async research(opts, sub) {
+  async research(opts, sub, positional = []) {
     if (sub === 'daemon') {
       daemon.start();
       out(`${c.green}research daemon running${c.reset} — ${daemon.status().jobs.length} jobs. Ctrl-C to stop.`);
@@ -323,6 +355,8 @@ ${c.bold}DRAFT DAY${c.reset}
 
 ${c.bold}DATA${c.reset}
   ${c.cyan}yahoo status${c.reset}            connection state and setup instructions
+  ${c.cyan}yahoo connect${c.reset}           print the authorisation URL to open in your browser
+  ${c.cyan}yahoo code${c.reset} "<url>"      finish the connection by pasting the redirect URL
   ${c.cyan}yahoo leagues${c.reset}           list your Yahoo NFL leagues
   ${c.cyan}yahoo sync${c.reset} [--league K] pull a league into the local database
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)
@@ -384,7 +418,7 @@ async function main() {
     };
     if (map[cmd]) { out(JSON.stringify(map[cmd](), null, 2)); return; }
   }
-  await fn(opts, positional[0]);
+  await fn(opts, positional[0], positional);
 }
 
 main()

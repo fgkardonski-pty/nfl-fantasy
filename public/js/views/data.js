@@ -47,10 +47,12 @@ function yahooCard(y) {
     );
   } else if (!y.connected) {
     body.push(
-      h('div.rec.info', 'Yahoo is configured but not yet connected. One click and the platform reads your real league.'),
-      h('a.btn.primary', { href: '/auth/yahoo' }, 'Connect Yahoo (read only)'),
-      ' ',
-      h('a.btn', { href: '/auth/yahoo?write=1' }, 'Connect with write access')
+      h('div.rec.info', 'Yahoo is configured but not yet connected.'),
+      h('div.row-flex',
+        h('a.btn.primary', { href: '/auth/yahoo' }, 'Connect Yahoo (read only)'),
+        h('a.btn', { href: '/auth/yahoo?write=1' }, 'Connect with write access')
+      ),
+      manualConnect()
     );
   } else {
     body.push(
@@ -81,6 +83,79 @@ function yahooCard(y) {
     );
   }
   return h('div.card.mb', h('h4', 'Yahoo Fantasy'), ...body);
+}
+
+/**
+ * Fallback connection flow.
+ *
+ * Yahoo may refuse to register or redirect to a plain-HTTP localhost callback.
+ * When that happens the browser still lands on a URL containing the
+ * authorisation code, so pasting that address back in completes the connection
+ * without the redirect ever having to work.
+ */
+function manualConnect() {
+  const out = h('div.mt');
+  const wrap = h('div.mt',
+    h('details',
+      h('summary', { style: { cursor: 'pointer', color: 'var(--text-dim)', fontSize: '12.5px' } },
+        'The button above did not work? Connect by pasting the code instead'),
+      h('div.card.tight.mt-s',
+        h('p.small.dim', { style: { marginTop: 0 } },
+          'Yahoo sometimes refuses plain-HTTP localhost callbacks. This path works regardless: ',
+          'you approve in the browser, and paste back whatever ends up in the address bar — ',
+          'even if the page itself fails to load.'),
+        h('button.btn', { onclick: (e) => startManual(e.target, out) }, 'Step 1 — get the authorisation link'),
+        out
+      )
+    )
+  );
+  return wrap;
+}
+
+async function startManual(btn, out) {
+  btn.disabled = true;
+  try {
+    const { url } = await api('/api/yahoo/manual/start', { method: 'POST', body: {} });
+    const input = h('input', {
+      type: 'text', placeholder: 'paste the whole address bar here…',
+      style: { width: '100%', marginTop: '8px' },
+    });
+    out.replaceChildren(
+      h('div.rec.info', { style: { marginTop: '12px' } },
+        h('strong', 'Step 1. '), 'Open this link, approve access, then copy your browser\'s address bar:'),
+      h('div.card.tight', h('a', { href: url, target: '_blank', rel: 'noopener',
+        style: { wordBreak: 'break-all', fontSize: '12px' } }, url)),
+      h('div.rec.info', h('strong', 'Step 2. '), 'Paste it here — the page it lands on may show an error, that is expected.'),
+      input,
+      h('div.mt-s',
+        h('button.btn.primary', { onclick: (e) => finishManual(e.target, input, out) }, 'Finish connection')),
+      h('div.xs.mute.mt-s', 'The link is valid for 15 minutes.')
+    );
+  } catch (err) {
+    out.replaceChildren(errorBox(err));
+    btn.disabled = false;
+  }
+}
+
+async function finishManual(btn, input, out) {
+  btn.disabled = true;
+  btn.textContent = 'connecting…';
+  try {
+    const res = await api('/api/yahoo/manual/finish', { method: 'POST', body: { pasted: input.value } });
+    out.replaceChildren(
+      h('div.rec', h('strong', 'Connected. '),
+        res.leagues.length
+          ? `Found ${res.leagues.length} league${res.leagues.length === 1 ? '' : 's'}.`
+          : 'No NFL leagues found on this account for the current season.'),
+      ...res.leagues.map((l) => h('div.small', `${l.name} — ${l.num_teams} teams, week ${l.current_week} `,
+        h('code', l.league_key))),
+      h('button.btn.primary.mt-s', { onclick: () => location.reload() }, 'Reload and sync')
+    );
+  } catch (err) {
+    out.appendChild(errorBox(err));
+    btn.disabled = false;
+    btn.textContent = 'Finish connection';
+  }
 }
 
 async function syncNow(btn) {
