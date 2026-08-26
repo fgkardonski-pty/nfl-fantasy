@@ -1,0 +1,37 @@
+{
+  "_comment": "Copy this to real-league.json and fill in your ACTUAL league — find every value here on Yahoo's League > Settings page in your browser, no API needed.",
+
+  "name": "My League Name",
+  "season": 2026,
+  "numTeams": 12,
+  "myTeamName": "My Team Name",
+
+  "_scoring_comment": "Only include the stat keys your league actually uses non-default points for. Omit a key to use the standard full-PPR default. Common keys below — delete any you don't need to change.",
+  "scoring": {
+    "rec": 1,
+    "pass_yd": 0.04,
+    "pass_td": 4,
+    "pass_int": -1,
+    "rush_yd": 0.1,
+    "rush_td": 6,
+    "rec_yd": 0.1,
+    "rec_td": 6,
+    "fum_lost": -2
+  },
+
+  "_rosterSlots_comment": "One entry per slot type, in the order Yahoo shows them under League > Settings > Roster Positions. W/R/T = FLEX, Q/W/R/T = SUPERFLEX. BN = bench (not a starting slot).",
+  "rosterSlots": [
+    { "slot": "QB", "count": 1 },
+    { "slot": "RB", "count": 2 },
+    { "slot": "WR", "count": 2 },
+    { "slot": "TE", "count": 1 },
+    { "slot": "W/R/T", "count": 1 },
+    { "slot": "K", "count": 1 },
+    { "slot": "DEF", "count": 1 },
+    { "slot": "BN", "count": 6 }
+  ],
+
+  "faabBudget": 100,
+  "numPlayoffTeams": 6,
+  "playoffStartWeek": 15
+}

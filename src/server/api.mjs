@@ -215,15 +215,22 @@ export function buildApi() {
     const nextPick = nextOwnPick(pickNumber, slot, numTeams, rounds);
 
     // Everyone already drafted in this league's stored draft is off the board;
-    // in a live draft the client posts the picks as they happen.
+    // in a live draft the client posts the picks as they happen via `drafted`
+    // (anyone taken) and `mine` (which of those went to MY roster). Without
+    // `mine`, roster-need scoring silently has nothing to work with — every
+    // live draft run through the UI would score every pick as if my roster
+    // were still empty, which understates how much a position is already
+    // covered as the draft goes on.
     const drafted = new Set(
       (query.drafted ? String(query.drafted).split(',') : [])
         .concat(all('SELECT player_id FROM draft_picks WHERE league_key = ? AND pick < ?', [league.league_key, pickNumber]).map((d) => d.player_id))
         .filter(Boolean)
     );
     const myKeys = new Set(
-      all('SELECT player_id FROM draft_picks WHERE league_key = ? AND team_key = ? AND pick < ?',
-        [league.league_key, query.team_key ?? '', pickNumber]).map((d) => d.player_id)
+      (query.mine ? String(query.mine).split(',') : [])
+        .concat(all('SELECT player_id FROM draft_picks WHERE league_key = ? AND team_key = ? AND pick < ?',
+          [league.league_key, query.team_key ?? '', pickNumber]).map((d) => d.player_id))
+        .filter(Boolean)
     );
 
     const pool = all('SELECT * FROM players').filter((p) => !drafted.has(p.player_id));
@@ -254,6 +261,8 @@ export function buildApi() {
       ...rest,
       pickNumber,
       nextPickNumber: nextPick,
+      // Trimmed, not the full projection object — the client only renders name/pos.
+      myRoster: myRoster.map((p) => ({ player_id: p.player_id, name: p.name, pos: p.pos })),
       tierSummary: Object.fromEntries(
         Object.entries(tiers ?? {}).map(([pos, list]) => [
           pos,

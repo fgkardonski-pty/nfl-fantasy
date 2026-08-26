@@ -17,6 +17,9 @@ import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextOwnPick } from '../src/engine/draft.mjs';
+import { seedRealPlayers, importAdpFromText, setupRealLeague } from '../src/realdata.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const C = {
   reset: '\x1b[0m', dim: '\x1b[2m', bold: '\x1b[1m',
@@ -330,6 +333,42 @@ const COMMANDS = {
     }
   },
 
+  async real(opts, sub) {
+    if (sub === 'seed') {
+      out('Fetching the real NFL player index from Sleeper...');
+      const { players } = await seedRealPlayers();
+      out(`${c.green}\u2713${c.reset} seeded ${players} real players`);
+      return;
+    }
+    if (sub === 'adp') {
+      const file = opts.file ?? opts._file;
+      if (!file) { out(`${c.red}Usage:${c.reset} node bin/oracle.mjs real adp --file <rankings.txt>`); process.exit(1); }
+      const text = fs.readFileSync(path.resolve(file), 'utf8');
+      const season = Number(opts.season ?? config.season);
+      const report = importAdpFromText(text, { season, source: opts.source ?? 'manual' });
+      out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} names`);
+      if (report.unmatched.length) {
+        out(`\n${c.yellow}Unmatched (fix the spelling in your file, or these players are not in the DB yet):${c.reset}`);
+        for (const n of report.unmatched) out(`  ${c.grey}${n}${c.reset}`);
+      }
+      return;
+    }
+    if (sub === 'league') {
+      const file = opts.file ?? opts._file;
+      if (!file) {
+        out(`${c.red}Usage:${c.reset} node bin/oracle.mjs real league --file <league.json>`);
+        out(`${c.grey}See real-league.example.json for the template.${c.reset}`);
+        process.exit(1);
+      }
+      const cfg = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8'));
+      const { league_key } = setupRealLeague(cfg);
+      out(`${c.green}\u2713${c.reset} league configured: ${c.bold}${cfg.name}${c.reset} (${league_key})`);
+      return;
+    }
+    out(`${c.red}Unknown real action "${sub}". Try: seed | adp --file <f> | league --file <f>${c.reset}`);
+    process.exit(1);
+  },
+
   help() {
     out(`
 ${c.bold}${c.green}GRIDIRON ORACLE${c.reset} ${c.grey}— a war room built to win your fantasy league${c.reset}
@@ -359,6 +398,9 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}yahoo code${c.reset} "<url>"      finish the connection by pasting the redirect URL
   ${c.cyan}yahoo leagues${c.reset}           list your Yahoo NFL leagues
   ${c.cyan}yahoo sync${c.reset} [--league K] pull a league into the local database
+  ${c.cyan}real seed${c.reset}               seed real NFL players from Sleeper (no Yahoo needed)
+  ${c.cyan}real league${c.reset} --file f.json  configure a real league from hand-entered settings
+  ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)
   ${c.cyan}research daemon${c.reset}         run the scheduler in the foreground
 
@@ -418,6 +460,7 @@ async function main() {
     };
     if (map[cmd]) { out(JSON.stringify(map[cmd](), null, 2)); return; }
   }
+  if (positional[1] && !opts.file) opts._file = positional[1];
   await fn(opts, positional[0], positional);
 }
 

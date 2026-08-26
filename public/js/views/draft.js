@@ -3,10 +3,10 @@
  * you advance pick by pick.
  */
 import {
-  h, api, loading, errorBox, pct, n1, n2, posEl, badge, table, empty, statusBadge,
+  h, frag, api, loading, errorBox, pct, n1, n2, posEl, badge, table, empty, statusBadge,
 } from '../util.js';
 
-let state = { slot: 1, pick: null, rounds: 16, drafted: [] };
+let state = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [] };
 
 export async function render(root) {
   const league = await api('/api/league').catch(() => null);
@@ -28,7 +28,7 @@ export async function render(root) {
       onchange: (e) => { state.rounds = Number(e.target.value); refresh(); } }),
     h('button.btn.sm', { onclick: () => { state.pick += 1; refresh(); } }, 'advance pick →'),
     state.drafted.length
-      ? h('button.btn.sm', { onclick: () => { state.drafted = []; refresh(); } }, `clear ${state.drafted.length} marked`)
+      ? h('button.btn.sm', { onclick: () => { state.drafted = []; state.mine = []; refresh(); } }, `clear ${state.drafted.length} marked`)
       : null
   );
 
@@ -53,6 +53,7 @@ export async function render(root) {
         rounds: String(state.rounds), limit: '20', sims: '300',
       });
       if (state.drafted.length) params.set('drafted', state.drafted.join(','));
+      if (state.mine.length) params.set('mine', state.mine.join(','));
       const d = await api(`/api/draft/board?${params}`);
       body.replaceChildren(board(d, numTeams, refresh));
     } catch (err) { body.replaceChildren(errorBox(err)); }
@@ -100,9 +101,21 @@ function board(d, numTeams, refresh) {
           h('td.num', { class: p.survivalToNextPick < 0.3 ? 'bad' : 'mute' }, pct(p.survivalToNextPick, 0)),
           h('td.num.mute', p.adp != null ? n1(p.adp) : '—'),
           h('td.num', n1(p.score)),
-          h('td.right', h('button.btn.sm', {
-            onclick: () => { state.drafted.push(p.player_id); state.pick += 1; refresh(); },
-          }, 'taken'))
+          h('td.right', h('div.row-flex', { style: { justifyContent: 'flex-end' } },
+            h('button.btn.sm.primary', {
+              title: 'Mark this player as YOUR pick — feeds roster-need scoring for the rest of the draft',
+              onclick: () => {
+                state.drafted.push(p.player_id);
+                state.mine.push(p.player_id);
+                state.pick += 1;
+                refresh();
+              },
+            }, 'I took'),
+            h('button.btn.sm', {
+              title: 'Mark this player as taken by another team',
+              onclick: () => { state.drafted.push(p.player_id); state.pick += 1; refresh(); },
+            }, 'opp took')
+          ))
         ))
       )
     ),
@@ -123,6 +136,14 @@ function board(d, numTeams, refresh) {
     h('div.card.tight',
       h('div.row-flex', ...Object.entries(d.need).filter(([, v]) => v > 0.05).map(([pos, v]) =>
         badge(`${pos} ${n2(v)}`, v >= 1 ? 'bad' : 'warn')))
-    )
+    ),
+
+    d.myRoster?.length ? frag(
+      h('div.section-head', h('h3', `Your roster so far (${d.myRoster.length})`)),
+      h('div.card.tight',
+        h('div.row-flex', ...d.myRoster.map((p) =>
+          badge(`${p.pos} ${p.name}`, 'ok')))
+      )
+    ) : null
   );
 }
