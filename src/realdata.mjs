@@ -31,6 +31,45 @@ const pid = (sleeperId) => `sl${sleeperId}`;
  * Safe to re-run — it upserts, so injury/depth-chart updates just refresh the
  * existing rows.
  */
+/**
+ * Remove the synthetic demo world.
+ *
+ * Demo players are fictional and carry `dp` ids. Once real players are loaded
+ * they must not coexist: the draft board scores the whole player table, so a
+ * mixed pool would rank invented names alongside real ones with no visible
+ * distinction — the single worst failure mode for a tool someone is trusting
+ * live on draft night.
+ *
+ * Safe to run: everything it deletes is regenerable with `oracle demo`.
+ */
+export function clearDemoData() {
+  const leagues = all("SELECT league_key FROM leagues WHERE is_demo = 1");
+  for (const l of leagues) {
+    run('DELETE FROM teams WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM rosters WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM matchups WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM transactions WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM ownership WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM draft_picks WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM projections WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM opponent_profiles WHERE league_key = ?', [l.league_key]);
+    run('DELETE FROM leagues WHERE league_key = ?', [l.league_key]);
+  }
+  // Demo players, and every row keyed to them.
+  run("DELETE FROM player_stats WHERE player_id LIKE 'dp%'");
+  run("DELETE FROM player_usage WHERE player_id LIKE 'dp%'");
+  run("DELETE FROM adp WHERE player_id LIKE 'dp%'");
+  run("DELETE FROM players WHERE player_id LIKE 'dp%'");
+  const remaining = get("SELECT COUNT(*) c FROM players WHERE player_id LIKE 'dp%'")?.c ?? 0;
+  log.info(`cleared ${leagues.length} demo league(s) and their fictional players`);
+  return { leagues: leagues.length, remainingDemoPlayers: remaining };
+}
+
+/** How many fictional demo players are currently mixed into the pool. */
+export function demoPlayerCount() {
+  return get("SELECT COUNT(*) c FROM players WHERE player_id LIKE 'dp%'")?.c ?? 0;
+}
+
 export async function seedRealPlayers() {
   const index = await sleeper.playerIndex();
   if (!index.length) {

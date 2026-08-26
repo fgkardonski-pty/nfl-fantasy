@@ -17,7 +17,7 @@ import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextOwnPick } from '../src/engine/draft.mjs';
-import { seedRealPlayers, importAdpFromText, setupRealLeague } from '../src/realdata.mjs';
+import { seedRealPlayers, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount } from '../src/realdata.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -335,9 +335,23 @@ const COMMANDS = {
 
   async real(opts, sub) {
     if (sub === 'seed') {
+      const demoCount = demoPlayerCount();
+      if (demoCount && !opts.clean) {
+        out(`${c.yellow}\u26a0${c.reset}  ${demoCount} fictional demo players are in the database.`);
+        out(`   Mixing them with real players would rank invented names on your draft board.`);
+        out(`   Re-run with ${c.cyan}--clean${c.reset} to remove the demo world first:`);
+        out(`     ${c.cyan}node bin/oracle.mjs real seed --clean${c.reset}`);
+        out(`   ${c.grey}(demo data is regenerable any time with: node bin/oracle.mjs demo)${c.reset}`);
+        process.exit(1);
+      }
+      if (opts.clean) {
+        const { leagues } = clearDemoData();
+        out(`${c.grey}cleared ${demoCount} demo players and ${leagues} demo league(s)${c.reset}`);
+      }
       out('Fetching the real NFL player index from Sleeper...');
       const { players } = await seedRealPlayers();
       out(`${c.green}\u2713${c.reset} seeded ${players} real players`);
+      out(`${c.grey}Next: node bin/oracle.mjs real league --file fantazy-fulzbol.json${c.reset}`);
       return;
     }
     if (sub === 'adp') {
@@ -398,7 +412,7 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}yahoo code${c.reset} "<url>"      finish the connection by pasting the redirect URL
   ${c.cyan}yahoo leagues${c.reset}           list your Yahoo NFL leagues
   ${c.cyan}yahoo sync${c.reset} [--league K] pull a league into the local database
-  ${c.cyan}real seed${c.reset}               seed real NFL players from Sleeper (no Yahoo needed)
+  ${c.cyan}real seed${c.reset} [--clean]     seed real NFL players from Sleeper (no Yahoo needed)
   ${c.cyan}real league${c.reset} --file f.json  configure a real league from hand-entered settings
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)

@@ -6,7 +6,14 @@ import {
   h, frag, api, loading, errorBox, pct, n1, n2, posEl, badge, table, empty, statusBadge,
 } from '../util.js';
 
-let state = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [] };
+let state = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [], q: '' };
+
+let searchTimer = null;
+/** Typing fires a Monte Carlo draft simulation per keystroke without this. */
+function debounceSearch(fn) {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(fn, 250);
+}
 
 export async function render(root) {
   const league = await api('/api/league').catch(() => null);
@@ -27,6 +34,14 @@ export async function render(root) {
       style: { width: '68px' },
       onchange: (e) => { state.rounds = Number(e.target.value); refresh(); } }),
     h('button.btn.sm', { onclick: () => { state.pick += 1; refresh(); } }, 'advance pick →'),
+    h('input', {
+      type: 'text',
+      placeholder: 'find any player to mark taken…',
+      value: state.q,
+      title: 'Searches the ENTIRE pool, not just the board — use this when a rival takes someone outside the top 20',
+      style: { minWidth: '260px' },
+      oninput: (e) => { state.q = e.target.value; debounceSearch(refresh); },
+    }),
     state.drafted.length
       ? h('button.btn.sm', { onclick: () => { state.drafted = []; state.mine = []; refresh(); } }, `clear ${state.drafted.length} marked`)
       : null
@@ -54,6 +69,7 @@ export async function render(root) {
       });
       if (state.drafted.length) params.set('drafted', state.drafted.join(','));
       if (state.mine.length) params.set('mine', state.mine.join(','));
+      if (state.q.trim().length >= 2) params.set('q', state.q.trim());
       const d = await api(`/api/draft/board?${params}`);
       body.replaceChildren(board(d, numTeams, refresh));
     } catch (err) { body.replaceChildren(errorBox(err)); }
@@ -82,6 +98,42 @@ function board(d, numTeams, refresh) {
         )
       ),
       h('div.mt-s', ...top.reasons.map((r) => h('div.small.dim', `· ${r}`)))
+    ) : null,
+
+    d.matches?.length ? frag(
+      h('div.section-head',
+        h('h3', `Search results (${d.matches.length})`),
+        h('span.note', `searched all ${d.poolSize} available players`)),
+      h('div.card.tight',
+        table(
+          ['Player', { label: 'Tier', num: true }, { label: 'Proj', num: true },
+            { label: 'VOR', num: true }, { label: 'ADP', num: true }, ''],
+          d.matches.map((p) => h('tr',
+            h('td', h('div.row-flex', posEl(p.pos), h('span.pname', p.name),
+              h('span.xs.mute', `${p.pos}${p.posRank ?? ''}`),
+              h('span.pmeta', p.nfl_team ?? ''), statusBadge(p.status))),
+            h('td.num.mute', p.tier),
+            h('td.num', n1(p.mean)),
+            h('td.num', { class: p.vor > 0 ? 'good' : 'mute' }, n1(p.vor)),
+            h('td.num.mute', p.adp != null ? n1(p.adp) : '—'),
+            h('td.right', h('div.row-flex', { style: { justifyContent: 'flex-end' } },
+              h('button.btn.sm.primary', {
+                onclick: () => {
+                  state.drafted.push(p.player_id);
+                  state.mine.push(p.player_id);
+                  state.pick += 1; state.q = ''; refresh();
+                },
+              }, 'I took'),
+              h('button.btn.sm', {
+                onclick: () => {
+                  state.drafted.push(p.player_id);
+                  state.pick += 1; state.q = ''; refresh();
+                },
+              }, 'opp took')
+            ))
+          ))
+        )
+      )
     ) : null,
 
     h('div.section-head', h('h3', 'Board'), h('span.note', 'VONA = value that disappears at this position before your next pick')),

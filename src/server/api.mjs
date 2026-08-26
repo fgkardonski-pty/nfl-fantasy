@@ -256,13 +256,33 @@ export function buildApi() {
     // `all` is the entire scored player universe and `tiers` carries a full
     // copy of every player inside every tier — together roughly half a megabyte
     // the client never reads. Send the board and a tier SUMMARY instead.
-    const { all: _all, tiers, ...rest } = result;
+    const { all: scoredAll, tiers, ...rest } = result;
+
+    // Live-draft search. The board only shows the top N, but opponents
+    // routinely take players well outside it — especially in later rounds and
+    // whenever someone reaches. Without a way to find and mark those players,
+    // the board keeps recommending people who are already gone, which is worse
+    // than no board at all. Search covers the FULL scored pool, not the board.
+    const q = String(query.q ?? '').trim().toLowerCase();
+    const matches = q.length >= 2
+      ? scoredAll
+        .filter((p) => p.name.toLowerCase().includes(q))
+        .slice(0, 25)
+        .map((p) => ({
+          player_id: p.player_id, name: p.name, pos: p.pos, nfl_team: p.nfl_team,
+          posRank: p.posRank, tier: p.tier, status: p.status,
+          mean: p.mean, vor: p.vor, vona: p.vona, adp: p.adp,
+          score: p.score, survivalToNextPick: p.survivalToNextPick,
+        }))
+      : [];
     return {
       ...rest,
       pickNumber,
       nextPickNumber: nextPick,
       // Trimmed, not the full projection object — the client only renders name/pos.
       myRoster: myRoster.map((p) => ({ player_id: p.player_id, name: p.name, pos: p.pos })),
+      matches,
+      poolSize: scoredAll.length,
       tierSummary: Object.fromEntries(
         Object.entries(tiers ?? {}).map(([pos, list]) => [
           pos,
