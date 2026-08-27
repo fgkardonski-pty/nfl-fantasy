@@ -49,6 +49,12 @@ export const config = {
   },
 
   oddsApiKey: env('ODDS_API_KEY'),
+  // FantasyPros public API — personal, non-commercial key from
+  // https://api.fantasypros.com. Path is overridable because the exact
+  // endpoint shape was not confirmable at build time; see providers/fantasypros.mjs
+  fantasyProsKey: env('FANTASYPROS_API_KEY'),
+  fantasyProsBase: env('FANTASYPROS_API_BASE', 'https://api.fantasypros.com/public/v2'),
+  fantasyProsPath: env('FANTASYPROS_RANKINGS_PATH'),
   anthropicKey: env('ANTHROPIC_API_KEY'),
   llmModel: env('ORACLE_LLM_MODEL', 'claude-sonnet-5'),
 

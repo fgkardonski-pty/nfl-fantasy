@@ -17,6 +17,7 @@
  */
 import { upsertMany, run, get, meta, all } from './db/index.mjs';
 import * as sleeper from './providers/sleeper.mjs';
+import * as fantasypros from './providers/fantasypros.mjs';
 import { normaliseName } from './providers/sleeper.mjs';
 import { DEFAULT_SCORING } from './engine/scoring.mjs';
 import { logger } from './util/log.mjs';
@@ -237,4 +238,61 @@ export function setupRealLeague(cfg) {
   meta.set('active_league', leagueKey);
   log.info(`real league configured: ${league.name} (${league.num_teams} teams)`);
   return { league_key: leagueKey };
+}
+
+/**
+ * Import rankings straight from the FantasyPros API.
+ *
+ * Preferred over the pasted-text path: it carries POSITION as well as name, so
+ * two players who share a surname can be told apart — the text importer has to
+ * guess. It also refreshes on demand, which matters through preseason when
+ * rankings move daily on injury news.
+ */
+export async function importRankingsFromFantasyPros({ season, scoring = 'HALF' } = {}) {
+  const ranked = await fantasypros.fetchRankings({ season, scoring });
+  if (!ranked.length) {
+    return { matched: 0, total: 0, unmatched: [], note: 'FantasyPros returned no players.' };
+  }
+
+  const locals = all('SELECT player_id, name, pos FROM players');
+  // Index by name+position first, falling back to name alone. Position makes
+  // the match unambiguous where a name is shared.
+  const byNamePos = new Map();
+  const byName = new Map();
+  for (const p of locals) {
+    const n = normaliseName(p.name);
+    byNamePos.set(`${n}|${p.pos}`, p);
+    if (!byName.has(n)) byName.set(n, []);
+    byName.get(n).push(p);
+  }
+
+  const rows = [];
+  const unmatched = [];
+  const seen = new Set();
+  ranked.forEach((r, i) => {
+    const n = normaliseName(r.name);
+    let hit = r.pos ? byNamePos.get(`${n}|${r.pos}`) : null;
+    if (!hit) {
+      const candidates = byName.get(n) ?? [];
+      // Only fall back to a name-only match when it is unambiguous.
+      hit = candidates.length === 1 ? candidates[0] : null;
+    }
+    if (!hit) { unmatched.push(`${r.name}${r.pos ? ` (${r.pos})` : ''}`); return; }
+    if (seen.has(hit.player_id)) return;
+    seen.add(hit.player_id);
+    rows.push({
+      player_id: hit.player_id,
+      season,
+      source: 'fantasypros',
+      adp: r.adp ?? r.rank ?? i + 1,
+      adp_sd: null,
+    });
+  });
+
+  if (rows.length) {
+    upsertMany('adp', ['player_id', 'season', 'source', 'adp', 'adp_sd'], rows,
+      ['player_id', 'season', 'source']);
+  }
+  log.info(`FantasyPros import: ${rows.length}/${ranked.length} matched`);
+  return { matched: rows.length, total: ranked.length, unmatched, attribution: fantasypros.ATTRIBUTION };
 }

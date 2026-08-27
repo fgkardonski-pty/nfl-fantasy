@@ -17,7 +17,8 @@ import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextOwnPick } from '../src/engine/draft.mjs';
-import { seedRealPlayers, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount } from '../src/realdata.mjs';
+import { seedRealPlayers, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros } from '../src/realdata.mjs';
+import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -367,6 +368,42 @@ const COMMANDS = {
       }
       return;
     }
+    if (sub === 'fp-probe') {
+      const league = S.getLeague(opts.league);
+      const season = Number(opts.season ?? league?.season ?? config.season);
+      const scoring = opts.scoring ?? (league ? fantasypros.scoringCodeFor(league.scoring) : 'HALF');
+      rule(`FANTASYPROS PROBE (season ${season}, ${scoring})`);
+      const attempts = await fantasypros.probe({ season, scoring });
+      for (const a of attempts) {
+        const mark = a.playersFound ? `${c.green}\u2713${c.reset}` : `${c.red}\u2717${c.reset}`;
+        out(`  ${mark} ${a.template}`);
+        out(`     ${c.grey}HTTP ${a.status}${a.error ? ' — ' + a.error : ''} · players recognised: ${a.playersFound}${c.reset}`);
+        if (a.topLevelKeys) out(`     ${c.grey}top-level keys: ${a.topLevelKeys.join(', ')}${c.reset}`);
+        for (const sp of a.sample) out(`     ${c.grey}sample: ${sp.name} ${sp.pos ?? ''} ${sp.team ?? ''} rank ${sp.rank}${c.reset}`);
+      }
+      const working = attempts.find((a) => a.playersFound);
+      out('');
+      if (working) {
+        out(`  ${c.green}Working path found.${c.reset} Import with: ${c.cyan}node bin/oracle.mjs real fp${c.reset}`);
+      } else {
+        out(`  ${c.yellow}No path returned recognisable players.${c.reset}`);
+        out(`  ${c.grey}Paste this output back and the client can be adapted to the real shape.${c.reset}`);
+      }
+      return;
+    }
+    if (sub === 'fp') {
+      const league = S.getLeague(opts.league);
+      const season = Number(opts.season ?? league?.season ?? config.season);
+      const scoring = opts.scoring ?? (league ? fantasypros.scoringCodeFor(league.scoring) : 'HALF');
+      out(`Fetching ${scoring} consensus rankings from FantasyPros (season ${season})...`);
+      const report = await importRankingsFromFantasyPros({ season, scoring });
+      out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} ranked players`);
+      if (report.unmatched?.length) {
+        out(`${c.grey}unmatched (${report.unmatched.length}): ${report.unmatched.slice(0, 12).join(', ')}${report.unmatched.length > 12 ? ' …' : ''}${c.reset}`);
+      }
+      out(`${c.grey}${report.attribution ?? ''}${c.reset}`);
+      return;
+    }
     if (sub === 'league') {
       const file = opts.file ?? opts._file;
       if (!file) {
@@ -379,7 +416,7 @@ const COMMANDS = {
       out(`${c.green}\u2713${c.reset} league configured: ${c.bold}${cfg.name}${c.reset} (${league_key})`);
       return;
     }
-    out(`${c.red}Unknown real action "${sub}". Try: seed | adp --file <f> | league --file <f>${c.reset}`);
+    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp | fp-probe | adp --file <f>${c.reset}`);
     process.exit(1);
   },
 
@@ -414,6 +451,8 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}yahoo sync${c.reset} [--league K] pull a league into the local database
   ${c.cyan}real seed${c.reset} [--clean]     seed real NFL players from Sleeper (no Yahoo needed)
   ${c.cyan}real league${c.reset} --file f.json  configure a real league from hand-entered settings
+  ${c.cyan}real fp${c.reset}                 import rankings from the FantasyPros API (needs a key)
+  ${c.cyan}real fp-probe${c.reset}           diagnose the FantasyPros endpoint shape
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)
   ${c.cyan}research daemon${c.reset}         run the scheduler in the foreground
