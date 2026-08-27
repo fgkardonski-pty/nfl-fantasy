@@ -96,3 +96,31 @@ test('attribution string is available for the UI to display', () => {
   // FantasyPros ask to be credited where their data is used.
   assert.match(ATTRIBUTION, /FantasyPros/);
 });
+
+test('the request path matches the published spec exactly', async () => {
+  // Regression, asserted without network I/O. The canonical base URL was
+  // duplicated in config.mjs, and the stale copy there shadowed the correct one
+  // in the provider — dropping the /json path segment. Every request then hit a
+  // non-existent route and returned 403 "Missing Authentication Token", which
+  // reads like an auth failure and sent the diagnosis in the wrong direction
+  // entirely.
+  const { buildRequestUrl } = await import('../src/providers/fantasypros.mjs');
+  const url = buildRequestUrl('/nfl/2025/consensus-rankings', {
+    position: 'ALL', type: 'DRAFT', scoring: 'HALF', week: 0,
+  });
+
+  assert.equal(url.origin + url.pathname,
+    'https://api.fantasypros.com/public/v2/json/nfl/2025/consensus-rankings',
+    'the /json segment from the spec must be present');
+  // These enum values are case-sensitive; lowercase fails request validation.
+  assert.equal(url.searchParams.get('type'), 'DRAFT');
+  assert.equal(url.searchParams.get('scoring'), 'HALF');
+  assert.equal(url.searchParams.get('position'), 'ALL', 'position is required by the spec');
+});
+
+test('empty and null query parameters are omitted rather than sent blank', async () => {
+  const { buildRequestUrl } = await import('../src/providers/fantasypros.mjs');
+  const url = buildRequestUrl('/nfl/2025/projections', { position: 'ALL', week: null });
+  assert.ok(!url.searchParams.has('week'), 'a null week is left out, not sent as week=');
+  assert.equal(url.searchParams.get('position'), 'ALL');
+});

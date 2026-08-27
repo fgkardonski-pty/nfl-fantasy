@@ -48,16 +48,29 @@ export const isConfigured = () => Boolean(config.fantasyProsKey);
 
 const base = () => (config.fantasyProsBase || DEFAULT_BASE).replace(/\/+$/, '');
 
+/**
+ * Build the full request URL for a path and query.
+ *
+ * Exported so the exact path can be asserted in tests without any network I/O.
+ * The /json segment lives in DEFAULT_BASE and nowhere else — a duplicated copy
+ * in config once shadowed it, dropping the segment and turning every request
+ * into a 403 that read as an authentication failure rather than a bad route.
+ */
+export function buildRequestUrl(path, params = {}) {
+  const url = new URL(`${base()}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+  }
+  return url;
+}
+
 async function get(path, params, { noCache = false } = {}) {
   if (!isConfigured()) {
     throw new Error(
       'FANTASYPROS_API_KEY is not set in .env. Request a personal key at https://api.fantasypros.com'
     );
   }
-  const url = new URL(`${base()}${path}`);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
-  }
+  const url = buildRequestUrl(path, params);
   const res = await request(url.toString(), {
     source: 'fantasypros',
     headers: { [AUTH_HEADER]: config.fantasyProsKey },

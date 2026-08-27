@@ -53,7 +53,11 @@ export const config = {
   // https://api.fantasypros.com. Path is overridable because the exact
   // endpoint shape was not confirmable at build time; see providers/fantasypros.mjs
   fantasyProsKey: env('FANTASYPROS_API_KEY'),
-  fantasyProsBase: env('FANTASYPROS_API_BASE', 'https://api.fantasypros.com/public/v2'),
+  // No default here on purpose: the canonical base URL comes from the spec and
+  // lives in providers/fantasypros.mjs. Duplicating it meant a stale copy here
+  // silently shadowed the correct one and dropped the /json path segment,
+  // turning every request into a 404 that reported as an auth error.
+  fantasyProsBase: env('FANTASYPROS_API_BASE'),
   fantasyProsPath: env('FANTASYPROS_RANKINGS_PATH'),
   fantasyProsAuth: env('FANTASYPROS_AUTH_STYLE'),
   anthropicKey: env('ANTHROPIC_API_KEY'),
