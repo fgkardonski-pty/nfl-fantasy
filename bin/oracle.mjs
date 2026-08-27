@@ -376,7 +376,10 @@ const COMMANDS = {
       const attempts = await fantasypros.probe({ season, scoring });
       for (const a of attempts) {
         const mark = a.playersFound ? `${c.green}\u2713${c.reset}` : `${c.red}\u2717${c.reset}`;
-        out(`  ${mark} ${a.kind.padEnd(11)} season ${a.season} ${a.type.padEnd(7)} HTTP ${a.status} · ${a.playersFound} players`);
+        const claim = a.reported != null && a.reported !== a.playersFound
+          ? ` ${c.yellow}(API reports ${a.reported})${c.reset}`
+          : (a.reported != null ? ` ${c.grey}(API count ${a.reported})${c.reset}` : '');
+        out(`  ${mark} ${a.kind.padEnd(14)} season ${a.season} ${a.type.padEnd(13)} HTTP ${a.status} · ${a.playersFound} players${claim}`);
         for (const sp of a.sample) out(`     ${c.grey}${sp}${c.reset}`);
         if (!a.playersFound && a.body) out(`     ${c.grey}${a.body}${c.reset}`);
       }
@@ -399,6 +402,9 @@ const COMMANDS = {
       out(`Fetching season projections from FantasyPros (season ${season})...`);
       const report = await importProjectionsFromFantasyPros({ season });
       out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} projected players`);
+      if (report.truncated?.length) {
+        out(`${c.yellow}! the API sent fewer players than it reported for: ${report.truncated.join(', ')}${c.reset}`);
+      }
       if (report.unmatched?.length) {
         out(`${c.grey}unmatched (${report.unmatched.length}): ${report.unmatched.slice(0, 10).join(', ')}${report.unmatched.length > 10 ? ' …' : ''}${c.reset}`);
       }
@@ -412,6 +418,15 @@ const COMMANDS = {
       out(`Fetching ${scoring} consensus rankings from FantasyPros (season ${season})...`);
       const report = await importRankingsFromFantasyPros({ season, scoring, type: (opts.type ?? 'DRAFT').toUpperCase() });
       out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} ranked players`);
+      if (report.estimatedRanks) {
+        out(`${c.grey}${report.estimatedRanks} of those sat below the overall consensus board and were slotted by positional extrapolation${c.reset}`);
+      }
+      if (report.truncated?.length) {
+        out(`${c.yellow}! the API sent fewer players than it reported for: ${report.truncated.join(', ')}${c.reset}`);
+      }
+      if (report.matched < 150) {
+        out(`${c.yellow}! only ${report.matched} players priced — a 16-team draft is 256 picks. Paste this output back before drafting.${c.reset}`);
+      }
       if (report.unmatched?.length) {
         out(`${c.grey}unmatched (${report.unmatched.length}): ${report.unmatched.slice(0, 12).join(', ')}${report.unmatched.length > 12 ? ' …' : ''}${c.reset}`);
       }

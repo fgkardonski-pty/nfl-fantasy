@@ -262,7 +262,14 @@ export async function importRankingsFromFantasyPros({ season, scoring = 'HALF', 
       ['player_id', 'season', 'source']);
   }
   log.info(`FantasyPros rankings: ${rows.length}/${ranked.length} matched`);
-  return { matched: rows.length, total: ranked.length, unmatched, attribution: fantasypros.ATTRIBUTION };
+  return {
+    matched: rows.length,
+    total: ranked.length,
+    estimatedRanks: ranked.filter((r) => r.estimatedRank).length,
+    truncated: ranked.truncated ?? [],
+    unmatched,
+    attribution: fantasypros.ATTRIBUTION,
+  };
 }
 
 /**
@@ -282,7 +289,7 @@ export async function importRankingsFromFantasyPros({ season, scoring = 'HALF', 
  * results never get mixed in with forecasts once games are played.
  */
 export async function importProjectionsFromFantasyPros({ season, week = null } = {}) {
-  const rows = await fantasypros.fetchProjections({ season, position: 'ALL', week });
+  const rows = await fantasypros.fetchProjections({ season, week });
   if (!rows.length) {
     return { matched: 0, total: 0, unmatched: [], note: 'FantasyPros returned no projections.' };
   }
@@ -308,6 +315,7 @@ export async function importProjectionsFromFantasyPros({ season, week = null } =
   log.info(`FantasyPros projections: ${statRows.length}/${rows.length} matched`);
   return {
     matched: statRows.length, total: rows.length, unmatched,
+    truncated: rows.truncated ?? [],
     attribution: fantasypros.ATTRIBUTION,
   };
 }

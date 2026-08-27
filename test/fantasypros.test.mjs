@@ -124,3 +124,83 @@ test('empty and null query parameters are omitted rather than sent blank', async
   assert.ok(!url.searchParams.has('week'), 'a null week is left out, not sent as week=');
   assert.equal(url.searchParams.get('position'), 'ALL');
 });
+
+// ---------------------------------------------------------------------------
+// Positional sweep and merge
+// ---------------------------------------------------------------------------
+
+/**
+ * The overall (position=ALL) consensus board is not guaranteed to run as deep
+ * as a 16-team draft, which is 256 picks. The client therefore also pulls each
+ * position's own list and merges what the overall board omitted. These tests
+ * pin the two properties that matter: nobody already ranked gets their real
+ * overall rank overwritten by an estimate, and the players who arrive only
+ * through a positional list still come out in a sane draft order.
+ */
+test('the positional sweep never overwrites a real overall rank', async () => {
+  const { mergePositionalList, nameKey } = await import('../src/providers/fantasypros.mjs');
+  const merged = new Map();
+  for (const p of [
+    { name: 'Bijan Robinson', pos: 'RB', rank: 1 },
+    { name: 'Jahmyr Gibbs', pos: 'RB', rank: 3 },
+  ]) merged.set(nameKey(p), { ...p, estimatedRank: false });
+
+  mergePositionalList(merged, [
+    { name: 'Bijan Robinson', pos: 'RB', rank: 1 },
+    { name: 'Jahmyr Gibbs', pos: 'RB', rank: 2 },
+    { name: 'Deep Sleeper Back', pos: 'RB', rank: 3 },
+  ]);
+
+  assert.equal(merged.get(nameKey({ name: 'Jahmyr Gibbs', pos: 'RB' })).rank, 3,
+    'his real overall rank must survive the merge, not become his positional rank of 2');
+  assert.equal(merged.size, 3, 'the back the overall board omitted is added');
+});
+
+test('players below the overall board are ordered behind it, not ahead of it', async () => {
+  const { mergePositionalList, nameKey } = await import('../src/providers/fantasypros.mjs');
+  const merged = new Map();
+  // A shallow overall board: three backs, thinning out as it goes.
+  for (const p of [
+    { name: 'Back One', pos: 'RB', rank: 2 },
+    { name: 'Back Two', pos: 'RB', rank: 14 },
+    { name: 'Back Three', pos: 'RB', rank: 30 },
+  ]) merged.set(nameKey(p), { ...p, estimatedRank: false });
+
+  mergePositionalList(merged, [
+    { name: 'Back One', pos: 'RB', rank: 1 },
+    { name: 'Back Two', pos: 'RB', rank: 2 },
+    { name: 'Back Three', pos: 'RB', rank: 3 },
+    { name: 'Back Four', pos: 'RB', rank: 4 },
+    { name: 'Back Five', pos: 'RB', rank: 5 },
+  ]);
+
+  const four = merged.get(nameKey({ name: 'Back Four', pos: 'RB' }));
+  const five = merged.get(nameKey({ name: 'Back Five', pos: 'RB' }));
+  assert.ok(four.estimatedRank, 'a rank the overall board never gave is flagged as estimated');
+  assert.ok(four.rank > 30, `must sit behind the deepest real rank, got ${four.rank}`);
+  assert.ok(five.rank > four.rank, 'positional order is preserved down the tail');
+  // Slope from the two deepest anchors: (30-14)/(3-2) = 16 picks per back.
+  assert.equal(four.rank, 46);
+});
+
+test('a positional list adds players even when none of it overlaps the board', async () => {
+  const { mergePositionalList, nameKey } = await import('../src/providers/fantasypros.mjs');
+  // Kickers routinely miss the overall board entirely; they must still land in
+  // the pool, or they cannot be drafted at all.
+  const merged = new Map();
+  mergePositionalList(merged, [
+    { name: 'Some Kicker', pos: 'K', rank: 1 },
+    { name: 'Other Kicker', pos: 'K', rank: 2 },
+  ]);
+  assert.equal(merged.size, 2);
+  assert.equal(merged.get(nameKey({ name: 'Some Kicker', pos: 'K' })).rank, null,
+    'with no anchor there is nothing honest to extrapolate from');
+});
+
+test('the same player from two lists is merged once, not duplicated', async () => {
+  const { nameKey } = await import('../src/providers/fantasypros.mjs');
+  assert.equal(nameKey({ name: "Ja'Marr Chase", pos: 'WR' }), nameKey({ name: 'JaMarr Chase', pos: 'WR' }),
+    'punctuation differences between endpoints must not split one player in two');
+  assert.notEqual(nameKey({ name: 'Josh Allen', pos: 'QB' }), nameKey({ name: 'Josh Allen', pos: 'LB' }),
+    'two real players share this name at different positions');
+});

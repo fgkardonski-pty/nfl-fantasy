@@ -98,16 +98,16 @@ export function scoringCodeFor(leagueScoring) {
 // ---------------------------------------------------------------------------
 
 /**
- * Consensus rankings. Spec: GET /{sport}/{season}/consensus-rankings
- * `position` is REQUIRED; ALL is a valid NFLPositions value.
+ * Positions swept when building a full pool. Spec: NFLPositions.
+ *
+ * DST rather than DEF — the spec's enum uses the former; the response is
+ * normalised back to DEF for us in normalisePlayer.
  */
-export async function fetchRankings({ season, scoring = 'HALF', type = 'DRAFT' } = {}) {
-  const { res, url } = await get(`/nfl/${season}/consensus-rankings`, {
-    position: 'ALL',
-    type: String(type).toUpperCase(),
-    scoring: String(scoring).toUpperCase(),
-    week: 0,
-  });
+export const POSITION_GROUPS = ['QB', 'RB', 'WR', 'TE', 'K', 'DST'];
+
+/** One request, returning the parsed players alongside the count the API itself reports. */
+async function fetchRankingPage(season, params) {
+  const { res, url } = await get(`/nfl/${season}/consensus-rankings`, params);
   if (!res.ok) {
     throw new Error(
       `FantasyPros rankings failed: HTTP ${res.status}${res.error ? ` — ${res.error}` : ''}\n` +
@@ -118,9 +118,114 @@ export async function fetchRankings({ season, scoring = 'HALF', type = 'DRAFT' }
         : '')
     );
   }
-  const players = extractPlayers(res.json);
-  log.info(`rankings: ${players.length} players (${scoring}/${type}, season ${season})`);
+  return {
+    players: extractPlayers(res.json),
+    reported: Number.isFinite(Number(res.json?.count)) ? Number(res.json.count) : null,
+  };
+}
+
+export const nameKey = (p) => `${String(p.name ?? '').toLowerCase().replace(/[^a-z]/g, '')}|${p.pos ?? ''}`;
+
+/**
+ * Consensus rankings for a whole draft pool.
+ *
+ * WHY THIS SWEEPS POSITIONS. The overall (position=ALL) board is a single
+ * consensus list, and it is not guaranteed to run as deep as a 16-team draft
+ * does — a 16x16 draft is 256 picks, and the tail of it is exactly where the
+ * board earns its keep. Each positional call returns that position's own full
+ * list, so sweeping them and merging fills in everyone the overall board stops
+ * short of. Players already on the overall board keep their real overall rank;
+ * only the ones it omitted get an estimated one, and they are flagged as such.
+ *
+ * The API reports its own `count` per response, so a truncated reply is
+ * detected rather than silently imported as a short board — the failure mode
+ * that would matter most here is a board that looks complete and is not.
+ */
+export async function fetchRankings({ season, scoring = 'HALF', type = 'DRAFT', sweep = true } = {}) {
+  const common = {
+    type: String(type).toUpperCase(),
+    scoring: String(scoring).toUpperCase(),
+    week: 0,
+  };
+
+  const overall = await fetchRankingPage(season, { ...common, position: 'ALL' });
+  const merged = new Map();
+  for (const p of overall.players) merged.set(nameKey(p), { ...p, estimatedRank: false });
+
+  const truncated = [];
+  if (overall.reported != null && overall.players.length < overall.reported) {
+    truncated.push(`ALL (${overall.players.length} of ${overall.reported})`);
+  }
+
+  if (sweep) {
+    for (const pos of POSITION_GROUPS) {
+      let page;
+      try {
+        page = await fetchRankingPage(season, { ...common, position: pos });
+      } catch (err) {
+        log.warn(`rankings sweep: ${pos} failed — ${err.message.split('\n')[0]}`);
+        continue;
+      }
+      if (page.reported != null && page.players.length < page.reported) {
+        truncated.push(`${pos} (${page.players.length} of ${page.reported})`);
+      }
+      mergePositionalList(merged, page.players);
+    }
+  }
+
+  const players = [...merged.values()].sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9));
+  const estimated = players.filter((p) => p.estimatedRank).length;
+  log.info(
+    `rankings: ${players.length} players (${scoring}/${type}, season ${season}` +
+    `${estimated ? `, ${estimated} ranked by positional extrapolation` : ''})`
+  );
+  players.truncated = truncated;
   return players;
+}
+
+/**
+ * Fold one position's full list into the merged pool.
+ *
+ * Players the overall board already carries are left exactly as they are. For
+ * the ones it omitted, an overall rank has to come from somewhere, and the
+ * honest construction is to extrapolate from the deepest players at that
+ * position who DO appear on both lists: the gap in overall rank between the two
+ * deepest shared players tells us roughly how many picks pass between
+ * consecutive players at this position that late, and the tail is spaced by
+ * that. It is an estimate, marked as one, and it only ever orders players the
+ * overall board declined to rank at all.
+ */
+export function mergePositionalList(merged, list) {
+  const ordered = [...list]
+    .filter((p) => p.name && Number.isFinite(p.rank))
+    .sort((a, b) => a.rank - b.rank);
+  if (!ordered.length) return;
+
+  // Anchors: players present on both lists, as (positional rank -> overall rank).
+  const anchors = [];
+  for (const p of ordered) {
+    const known = merged.get(nameKey(p));
+    if (known && Number.isFinite(known.rank) && !known.estimatedRank) {
+      anchors.push({ posRank: p.rank, overall: known.rank });
+    }
+  }
+
+  const last = anchors[anchors.length - 1];
+  const prev = anchors[anchors.length - 2];
+  // Picks between consecutive players at this position, near the tail.
+  let slope = 8;
+  if (last && prev && last.posRank > prev.posRank) {
+    slope = Math.max(1, (last.overall - prev.overall) / (last.posRank - prev.posRank));
+  }
+
+  for (const p of ordered) {
+    const key = nameKey(p);
+    if (merged.has(key)) continue;
+    const overall = last
+      ? last.overall + Math.max(1, p.rank - last.posRank) * slope
+      : null;
+    merged.set(key, { ...p, rank: overall, adp: overall, estimatedRank: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -159,17 +264,46 @@ const STAT_MAP = {
 /**
  * Season projections. Spec: GET /nfl/{season}/projections, `position` required.
  * Omitting `week` yields season totals rather than a single week.
+ *
+ * Swept per position for the same reason the rankings are: the projections are
+ * the input the league's own scoring table gets applied to, so a short list
+ * here means players priced off a generic positional archetype instead of off
+ * what they are actually projected to do. Sweeping costs six requests once.
  */
-export async function fetchProjections({ season, position = 'ALL', week = null } = {}) {
-  const { res, url } = await get(`/nfl/${season}/projections`, { position, week });
-  if (!res.ok) {
+export async function fetchProjections({ season, week = null, positions = POSITION_GROUPS } = {}) {
+  const merged = new Map();
+  const truncated = [];
+  let any = false;
+
+  for (const position of positions) {
+    const { res, url } = await get(`/nfl/${season}/projections`, { position, week });
+    if (!res.ok) {
+      // A single position failing should not cost the other five.
+      log.warn(`projections: ${position} failed — HTTP ${res.status} ${redact(url)}`);
+      continue;
+    }
+    any = true;
+    const rows = extractPlayers(res.json);
+    const reported = Number(res.json?.count);
+    if (Number.isFinite(reported) && rows.length < reported) {
+      truncated.push(`${position} (${rows.length} of ${reported})`);
+    }
+    for (const r of rows) {
+      const key = nameKey(r);
+      if (!merged.has(key)) merged.set(key, r);
+    }
+  }
+
+  if (!any) {
     throw new Error(
-      `FantasyPros projections failed: HTTP ${res.status}${res.error ? ` — ${res.error}` : ''}\n  ${redact(url)}`
+      `FantasyPros projections failed: every position request errored for season ${season}.`
     );
   }
-  const rows = extractPlayers(res.json);
-  log.info(`projections: ${rows.length} players (season ${season}${week ? `, week ${week}` : ', season totals'})`);
-  return rows;
+
+  const out = [...merged.values()];
+  out.truncated = truncated;
+  log.info(`projections: ${out.length} players (season ${season}${week ? `, week ${week}` : ', season totals'})`);
+  return out;
 }
 
 /**
@@ -277,6 +411,7 @@ export async function probe({ season, scoring = 'HALF' } = {}) {
       results.push({
         kind: 'rankings', season: yr, type, status: res.status,
         playersFound: players.length,
+        reported: res.ok ? (Number(res.json?.count) || null) : null,
         sample: players.slice(0, 3).map((p) => `${p.name} (${p.pos}) rank ${p.rank}`),
         body: typeof res.body === 'string' ? res.body.slice(0, 140) : null,
         url: redact(url),
@@ -287,10 +422,26 @@ export async function probe({ season, scoring = 'HALF' } = {}) {
     results.push({
       kind: 'projections', season: yr, type: '-', status: pRes.status,
       playersFound: proj.length,
+      reported: pRes.ok ? (Number(pRes.json?.count) || null) : null,
       sample: proj.slice(0, 2).map((p) => `${p.name} (${p.pos}) ${JSON.stringify(p.stats).slice(0, 90)}`),
       body: typeof pRes.body === 'string' ? pRes.body.slice(0, 140) : null,
       url: redact(pUrl),
     });
   }
+
+  // One positional call, to show directly whether ALL is the short list.
+  const { url: rbUrl, res: rbRes } = await get(`/nfl/${season}/consensus-rankings`, {
+    position: 'RB', type: 'DRAFT', scoring: String(scoring).toUpperCase(), week: 0,
+  }, { noCache: true });
+  const rbs = rbRes.ok ? extractPlayers(rbRes.json) : [];
+  results.push({
+    kind: 'rankings', season, type: 'DRAFT/RB-only', status: rbRes.status,
+    playersFound: rbs.length,
+    reported: rbRes.ok ? (Number(rbRes.json?.count) || null) : null,
+    sample: rbs.slice(0, 3).map((p) => `${p.name} (${p.pos}) rank ${p.rank}`),
+    body: typeof rbRes.body === 'string' ? rbRes.body.slice(0, 140) : null,
+    url: redact(rbUrl),
+  });
+
   return results;
 }
