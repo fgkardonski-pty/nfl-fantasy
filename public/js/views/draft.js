@@ -79,7 +79,18 @@ export async function render(root) {
 
 function board(d, numTeams, refresh) {
   const top = d.board[0];
+  const cov = d.adpCoverage;
   return h('div',
+    cov && !cov.sufficient ? h('div.err', { style: { marginBottom: '14px' } },
+      h('div', h('strong', 'No draft rankings loaded — this board is not usable yet.')),
+      h('div.hint',
+        `Only ${cov.ranked} of ${cov.pool} players have a draft ranking, and this league needs at least `
+        + `${cov.needed} ranked to tell players apart. Without rankings every player at a position gets `
+        + `the SAME value, so the ordering below is meaningless.`),
+      h('div.hint', { style: { marginTop: '6px' } },
+        'Fix: paste a rankings list into rankings.txt, then run ',
+        h('code', 'node bin/oracle.mjs real adp --file rankings.txt'))
+    ) : null,
     top ? h('div.card.accent.mb',
       h('div.spread',
         h('div',

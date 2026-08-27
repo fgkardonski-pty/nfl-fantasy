@@ -283,6 +283,20 @@ export function buildApi() {
       myRoster: myRoster.map((p) => ({ player_id: p.player_id, name: p.name, pos: p.pos })),
       matches,
       poolSize: scoredAll.length,
+      // Without ADP the archetype curves have no positional rank to key off, so
+      // every player at a position collapses to the same value and the board
+      // silently becomes a meaningless list. That is far more dangerous than an
+      // empty board, because it still looks authoritative — so say it loudly.
+      adpCoverage: (() => {
+        const ranked = scoredAll.filter((p) => p.adp != null).length;
+        const startersNeeded = numTeams * league.slots.length;
+        return {
+          ranked,
+          pool: scoredAll.length,
+          needed: startersNeeded,
+          sufficient: ranked >= startersNeeded,
+        };
+      })(),
       tierSummary: Object.fromEntries(
         Object.entries(tiers ?? {}).map(([pos, list]) => [
           pos,

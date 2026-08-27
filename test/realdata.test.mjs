@@ -131,3 +131,36 @@ test('setupRealLeague is idempotent — re-running with the same league updates 
   const me = S.myTeam(second.league_key);
   assert.equal(me.name, 'V2', 'the second call\'s values win, not duplicated alongside the first');
 });
+
+test('without ADP every player at a position collapses to one value', async () => {
+  // This is the invariant that justifies the draft board's "no rankings
+  // loaded" warning. With no ADP there is no positional rank to key the
+  // archetype curves off, so the board becomes an authoritative-looking list
+  // in arbitrary order — a silent failure worse than an empty board, because
+  // nothing about it signals that it is meaningless.
+  const { upsertMany, run, all } = await import('../src/db/index.mjs');
+  const S = await import('../src/service.mjs');
+
+  run('DELETE FROM adp');
+  run("DELETE FROM players WHERE player_id LIKE 'cov%'");
+  const cols = ['player_id', 'name', 'pos', 'nfl_team', 'bye_week', 'status', 'injury_note',
+    'age', 'years_exp', 'depth_rank', 'yahoo_key', 'sleeper_id', 'headshot', 'updated_at'];
+  upsertMany('players', cols, Array.from({ length: 12 }, (_, i) => ({
+    player_id: `cov${i}`, name: `Cov Back ${i}`, pos: 'RB', nfl_team: 'KC', bye_week: 10,
+    status: '', injury_note: null, age: 25, years_exp: 3, depth_rank: 1,
+    yahoo_key: null, sleeper_id: `cov${i}`, headshot: null, updated_at: Date.now(),
+  })), ['player_id']);
+
+  const { league_key } = setupRealLeague({
+    name: 'Coverage Check', season: 2031, numTeams: 12, scoring: { rec: 0.5 },
+    rosterSlots: [{ slot: 'RB', count: 2 }, { slot: 'BN', count: 4 }], myTeamName: 'T',
+  });
+  const league = S.getLeague(league_key);
+  const pool = all("SELECT * FROM players WHERE player_id LIKE 'cov%'");
+  const values = S.draftValues(league, pool);
+
+  const distinct = new Set(values.map((v) => v.mean.toFixed(6)));
+  assert.equal(distinct.size, 1,
+    'with no rankings every back is priced identically — the board cannot order them');
+  assert.match(values[0].basis, /no ADP/, 'and the valuation says so rather than implying precision');
+});
