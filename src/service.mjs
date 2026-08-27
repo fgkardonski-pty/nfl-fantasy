@@ -250,11 +250,42 @@ export function draftValues(league, players) {
    * because none of those categories exist in the generic scoring those priors
    * were calibrated against.
    */
+  // Pricing a rank means building an archetype stat line and scoring it through
+  // the league's rules. Thousands of players share a rank — every unranked one
+  // at a position does — so the answer is memoised per position and rank.
+  const priced = new Map();
+  const priceRank = (pos, rank) => {
+    const key = `${pos}|${rank}`;
+    let v = priced.get(key);
+    if (v === undefined) { v = expectedPointsAtRank(pos, rank, league.scoring); priced.set(key, v); }
+    return v;
+  };
+
   const adpCurve = (pos, adp, playerId) => {
     const rank = posRankOf.get(playerId)
       ?? (adp != null ? Math.max(1, Math.round(adp / 3)) : (UNRANKED[pos] ?? 60));
-    return expectedPointsAtRank(pos, rank, league.scoring);
+    return priceRank(pos, rank);
   };
+
+  // Fetch every player's stat rows in two queries rather than two per player.
+  // At a realistic pool size that was over eight thousand round trips to build
+  // one draft board, and it dominated the time between marking a pick and
+  // seeing the next recommendation — which is the one moment in this whole
+  // application where latency actually costs something.
+  const projByPlayer = new Map();
+  for (const r of all(
+    'SELECT player_id, stats FROM player_stats WHERE season = ? AND week = 0', [season]
+  )) projByPlayer.set(r.player_id, r.stats);
+
+  const gamesByPlayer = new Map();
+  for (const r of all(
+    'SELECT player_id, week, stats FROM player_stats WHERE season = ? AND week > 0 ORDER BY week DESC',
+    [season]
+  )) {
+    let list = gamesByPlayer.get(r.player_id);
+    if (!list) gamesByPlayer.set(r.player_id, (list = []));
+    list.push(r);
+  }
 
   return players.map((p) => {
     // Week 0 holds a PROJECTED stat line; weeks 1+ hold observed games. The
@@ -263,17 +294,11 @@ export function draftValues(league, players) {
     // one-game sample must be shrunk is simply wrong. Doing so priced a back
     // projected for 1350 yards and 11 touchdowns at 10 points a game instead of
     // roughly 24 — an error large enough to invert a draft board.
-    const projRow = get(
-      'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week = 0',
-      [p.player_id, season]
-    );
-    const rows = all(
-      'SELECT week, stats FROM player_stats WHERE player_id = ? AND season = ? AND week > 0 ORDER BY week DESC',
-      [p.player_id, season]
-    );
-    const prior = expectedPointsAtRank(p.pos, UNRANKED[p.pos] ?? 60, league.scoring);
+    const projStats = projByPlayer.get(p.player_id) ?? null;
+    const rows = gamesByPlayer.get(p.player_id) ?? [];
+    const prior = priceRank(p.pos, UNRANKED[p.pos] ?? 60);
     const adp = adpOf(p.player_id, season);
-    const projected = projRow ? scoreStatLine(j(projRow.stats, {}), league.scoring) : null;
+    const projected = projStats != null ? scoreStatLine(j(projStats, {}), league.scoring) : null;
 
     let value;
     let basis;
@@ -305,7 +330,7 @@ export function draftValues(league, players) {
         ? `${p.pos}${rank}, priced in league scoring (ADP ${adp.toFixed(1)})`
         : `ADP ${adp.toFixed(1)} -> ${p.pos}${rank ?? '?'} (inferred), priced in league scoring`;
     } else {
-      value = expectedPointsAtRank(p.pos, UNRANKED[p.pos] ?? 60, league.scoring);
+      value = prior;
       basis = 'unranked (no ADP) — priced as roster filler in league scoring';
     }
 

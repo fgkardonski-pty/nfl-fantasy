@@ -64,6 +64,19 @@ export function shortlist(available, size) {
 }
 
 /**
+ * Everything a run of simulations can share.
+ *
+ * The shortlist and its rank map depend only on the available pool, so they are
+ * built once and handed to every simulation. Ranks are keyed by player_id and
+ * the per-simulation pool is a fresh shallow copy, so the shared map stays
+ * valid even as each simulation splices players out of its own copy.
+ */
+export function prepareSimulation(available, size) {
+  const pool = shortlist(available, size);
+  return { pool, ranks: draftRanks(pool) };
+}
+
+/**
  * Probability that a given available player is taken at a given pick by an
  * opponent, given ADP, positional run pressure, and that opponent's bias.
  */
@@ -90,13 +103,19 @@ function opponentPickWeights(available, pickNumber, { runPressure = {}, bias = {
  * Simulate the draft forward from `pickNumber` to `untilPick`, returning the
  * board as it would realistically look when you are back on the clock.
  */
-export function simulateForward(available, pickNumber, untilPick, opponents, rng, { poolSize = 70 } = {}) {
+export function simulateForward(available, pickNumber, untilPick, opponents, rng, { poolSize = 70, prepared = null } = {}) {
   // Real drafters pick from a short list, not from every rostered NFL player.
   // Sampling across the whole universe flattens the distribution so badly that
   // elite players "survive" every simulation and VONA collapses to zero.
-  const pool = shortlist(available, Math.max(poolSize, (untilPick - pickNumber) * 3))
-    .map((p) => ({ ...p }));
-  const poolRanks = draftRanks(pool);
+  //
+  // `prepared` lets a caller running many simulations build that shortlist once
+  // and reuse it. It depends only on `available`, which does not change between
+  // simulations, so recomputing it per run sorted the entire player universe
+  // hundreds of times over — the single largest cost in producing a pick, and
+  // pure waste. Callers that do not pass it get the same result, just slower.
+  const base = prepared ?? prepareSimulation(available, Math.max(poolSize, (untilPick - pickNumber) * 3));
+  const pool = base.pool.map((p) => ({ ...p }));
+  const poolRanks = base.ranks;
   const runPressure = Object.fromEntries(POSITIONS.map((p) => [p, 0]));
   const taken = [];
   for (let pick = pickNumber; pick < untilPick && pool.length; pick++) {
@@ -131,9 +150,9 @@ export function computeVona(available, { pickNumber, nextPickNumber, opponents, 
   // Players outside the realistic draft shortlist are never taken by the
   // opponent model, so they survive with probability 1 and set the floor for
   // "best still available later".
-  const shortlistIds = new Set(
-    shortlist(available, Math.max(70, (nextPickNumber - pickNumber) * 3)).map((p) => p.player_id)
-  );
+  const size = Math.max(70, (nextPickNumber - pickNumber) * 3);
+  const prepared = prepareSimulation(available, size);
+  const shortlistIds = new Set(prepared.pool.map((p) => p.player_id));
   const floorByPos = {};
   for (const p of available) {
     if (shortlistIds.has(p.player_id)) continue;
@@ -142,7 +161,9 @@ export function computeVona(available, { pickNumber, nextPickNumber, opponents, 
   }
 
   for (let s = 0; s < sims; s++) {
-    const { remaining } = simulateForward(available, pickNumber + 1, nextPickNumber, opponents, rng);
+    const { remaining } = simulateForward(
+      available, pickNumber + 1, nextPickNumber, opponents, rng, { prepared }
+    );
     const byPos = {};
     for (const p of remaining) {
       if (!byPos[p.pos] || p.mean > byPos[p.pos].mean) byPos[p.pos] = p;
@@ -180,6 +201,12 @@ export function recommendPick({
 }) {
   const { players: valued, levels, meta } = computeVor(available, rosterSlots, numTeams);
 
+  // How many bench slots there are decides how many bye collisions are
+  // absorbable before one actually costs a starting spot.
+  const benchDepth = (Array.isArray(rosterSlots) ? rosterSlots : [])
+    .filter((s) => String(s?.slot ?? s).toUpperCase() === 'BN')
+    .reduce((a, s) => a + (Number(s?.count) || 1), 0) || 5;
+
   // Tier WITHIN each position. A global tier list bands quarterbacks against
   // kickers, which is arithmetically valid and completely useless to a drafter:
   // what you need to see is the cliff at YOUR position.
@@ -211,8 +238,9 @@ export function recommendPick({
     const needBonus = (need[p.pos] ?? 0) * Math.max(2, levels[p.pos] * 0.12);
     const cliffBonus = lastInTier.has(p.player_id) ? Math.max(1, (p.mean - levels[p.pos]) * 0.08) : 0;
     const risk = riskPenalty(p);
+    const byePenalty = byeCollisionPenalty(p, myRoster, benchDepth);
     const survive = survivalProb.get(p.player_id) ?? 0;
-    const score = p.vor + v * 0.85 + needBonus + cliffBonus - risk;
+    const score = p.vor + v * 0.85 + needBonus + cliffBonus - risk - byePenalty;
     return {
       ...p,
       tier: tierOf.get(p.player_id) ?? 1,
@@ -220,9 +248,10 @@ export function recommendPick({
       needBonus,
       cliffBonus,
       risk,
+      byePenalty,
       survivalToNextPick: survive,
       score,
-      reasons: buildReasons(p, { v, needBonus, cliffBonus, risk, survive, levels, tiers: tierOf.get(p.player_id) }),
+      reasons: buildReasons(p, { v, needBonus, cliffBonus, risk, byePenalty, survive, levels, tiers: tierOf.get(p.player_id) }),
     };
   }).sort((a, b) => b.score - a.score);
 
@@ -238,6 +267,32 @@ export function recommendPick({
   };
 }
 
+/**
+ * Cost of stacking another starter onto a bye week I already have covered.
+ *
+ * Deliberately small. Drafting two starters who bye in the same week is a real
+ * cost but a narrow one: it is a single week out of the season, and only the
+ * players beyond what the bench can cover actually hurt. Sized as a tiebreaker,
+ * because a manager who passes on a clearly better player to dodge a bye
+ * collision has made the worse decision — which is exactly the mistake an
+ * over-weighted penalty would encourage.
+ *
+ * Scaled by the player's own VOR: colliding two elite starters costs more than
+ * colliding two marginal ones, because that is whose production goes missing.
+ */
+const SEASON_WEEKS = 14;
+
+export function byeCollisionPenalty(p, myRoster, benchDepth = 5) {
+  const bye = Number(p.bye_week);
+  if (!Number.isFinite(bye) || bye <= 0) return 0;
+  const clash = myRoster.filter((r) => Number(r.bye_week) === bye).length;
+  // The first player on any given bye is free — everyone has a bye somewhere,
+  // and a bench of this depth absorbs the early collisions.
+  const uncovered = Math.max(0, clash - Math.max(1, Math.round(benchDepth / 3)));
+  if (uncovered <= 0) return 0;
+  return (Math.max(0, p.vor ?? 0) / SEASON_WEEKS) * Math.min(uncovered, 3);
+}
+
 function riskPenalty(p) {
   let risk = 0;
   const s = (p.status || '').toUpperCase();
@@ -248,7 +303,7 @@ function riskPenalty(p) {
   return risk;
 }
 
-function buildReasons(p, { v, needBonus, cliffBonus, risk, survive, levels, tiers }) {
+function buildReasons(p, { v, needBonus, cliffBonus, risk, byePenalty, survive, levels, tiers }) {
   const out = [];
   out.push(`${p.pos}${p.posRank} · ${p.mean.toFixed(1)} proj vs ${(levels[p.pos] ?? 0).toFixed(1)} replacement = ${p.vor >= 0 ? '+' : ''}${p.vor.toFixed(1)} VOR`);
   if (v > 1.5) out.push(`Position falls off: only ${v.toFixed(1)} pts of ${p.pos} value survives to your next pick`);
@@ -258,6 +313,7 @@ function buildReasons(p, { v, needBonus, cliffBonus, risk, survive, levels, tier
   if (needBonus > 0.5) out.push('Fills an unfilled starting slot');
   if (cliffBonus > 0) out.push(`Last player in tier ${tiers} — a cliff follows`);
   if (risk > 3) out.push(`Injury risk: designated ${p.status}`);
+  if (byePenalty > 0) out.push(`Bye-week stack: more starters already off in week ${p.bye_week} than the bench covers`);
   return out;
 }
 

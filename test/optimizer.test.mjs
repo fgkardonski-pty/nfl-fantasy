@@ -241,3 +241,55 @@ test('a comma-delimited position never makes a player unstartable', () => {
   const { lineup } = optimalLineup([fixed], ['RB'], (p) => 10);
   assert.equal(lineup[0].player.name, 'Multi', 'and now he starts');
 });
+
+// ---------------------------------------------------------------------------
+// Bye-week stacking
+// ---------------------------------------------------------------------------
+
+/**
+ * Drafting several starters who are all off in the same week is a real cost,
+ * but a narrow one — a single week, and only for the players the bench cannot
+ * cover. These pin that it is priced as a tiebreaker and never as a reason to
+ * pass on a clearly better player, which would be the worse mistake.
+ */
+test('a bye week nobody else on the roster shares costs nothing', async () => {
+  const { byeCollisionPenalty } = await import('../src/engine/draft.mjs');
+  const roster = [{ bye_week: 7 }, { bye_week: 9 }, { bye_week: 11 }];
+  assert.equal(byeCollisionPenalty({ bye_week: 5, vor: 20 }, roster, 5), 0);
+});
+
+test('the bench absorbs the first collisions before any penalty applies', async () => {
+  const { byeCollisionPenalty } = await import('../src/engine/draft.mjs');
+  // Everyone has a bye somewhere; one overlap is normal roster construction.
+  assert.equal(byeCollisionPenalty({ bye_week: 7, vor: 20 }, [{ bye_week: 7 }], 5), 0);
+});
+
+test('stacking past what the bench covers costs, and scales with what is lost', async () => {
+  const { byeCollisionPenalty } = await import('../src/engine/draft.mjs');
+  const stacked = [{ bye_week: 7 }, { bye_week: 7 }, { bye_week: 7 }];
+  const elite = byeCollisionPenalty({ bye_week: 7, vor: 20 }, stacked, 5);
+  const marginal = byeCollisionPenalty({ bye_week: 7, vor: 2 }, stacked, 5);
+  assert.ok(elite > 0, 'a fourth starter on the same bye is a real cost');
+  assert.ok(elite > marginal, 'colliding elite production costs more than colliding filler');
+});
+
+test('the penalty stays small enough to be a tiebreaker, not a veto', async () => {
+  const { byeCollisionPenalty } = await import('../src/engine/draft.mjs');
+  const stacked = [{ bye_week: 7 }, { bye_week: 7 }, { bye_week: 7 }, { bye_week: 7 }];
+  const vor = 20;
+  const penalty = byeCollisionPenalty({ bye_week: 7, vor }, stacked, 5);
+  // A bye collision is one week of a fourteen-week season. If this ever grew
+  // large enough to outweigh a real VOR gap, the board would start ducking
+  // better players to tidy up a calendar.
+  assert.ok(penalty < vor * 0.25,
+    `penalty ${penalty.toFixed(2)} must stay well under the value it is weighed against`);
+});
+
+test('a player with no recorded bye week is never penalised', async () => {
+  const { byeCollisionPenalty } = await import('../src/engine/draft.mjs');
+  // Free agents in the rankings export carry no bye; absent data must not read
+  // as "week 0" and collide with everyone else missing one.
+  const roster = [{ bye_week: null }, { bye_week: null }, { bye_week: null }];
+  assert.equal(byeCollisionPenalty({ bye_week: null, vor: 20 }, roster, 5), 0);
+  assert.equal(byeCollisionPenalty({ bye_week: 0, vor: 20 }, roster, 5), 0);
+});

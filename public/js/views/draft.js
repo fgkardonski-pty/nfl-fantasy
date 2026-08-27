@@ -6,7 +6,46 @@ import {
   h, frag, api, loading, errorBox, pct, n1, n2, posEl, badge, table, empty, statusBadge,
 } from '../util.js';
 
-let state = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [], q: '' };
+/**
+ * Draft state survives a page reload.
+ *
+ * This lives in memory during a session, and a live draft is the one place
+ * where losing it hurts: an accidental refresh partway through sixteen rounds
+ * would drop every pick marked so far, and there is no way to reconstruct them
+ * under a thirty-second clock. Persisted per league so two leagues do not
+ * overwrite each other.
+ */
+const STORE_KEY = 'oracle.draft.v1';
+
+const BLANK = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [], q: '' };
+
+function loadState(leagueKey) {
+  try {
+    const raw = localStorage.getItem(`${STORE_KEY}.${leagueKey}`);
+    if (!raw) return { ...BLANK };
+    const saved = JSON.parse(raw);
+    return {
+      ...BLANK,
+      ...saved,
+      // Never restore a stale search box; it hides most of the board on load.
+      q: '',
+      drafted: Array.isArray(saved.drafted) ? saved.drafted : [],
+      mine: Array.isArray(saved.mine) ? saved.mine : [],
+    };
+  } catch { return { ...BLANK }; }
+}
+
+function saveState(leagueKey) {
+  try {
+    localStorage.setItem(`${STORE_KEY}.${leagueKey}`, JSON.stringify({
+      slot: state.slot, pick: state.pick, rounds: state.rounds,
+      drafted: state.drafted, mine: state.mine,
+    }));
+  } catch { /* private browsing, or storage disabled — the draft still works */ }
+}
+
+let state = { ...BLANK };
+let storeKey = 'default';
 
 let searchTimer = null;
 /** Typing fires a Monte Carlo draft simulation per keystroke without this. */
@@ -18,6 +57,8 @@ function debounceSearch(fn) {
 export async function render(root) {
   const league = await api('/api/league').catch(() => null);
   const numTeams = league?.num_teams ?? 12;
+  storeKey = league?.league_key ?? 'default';
+  state = loadState(storeKey);
   if (state.pick == null) state.pick = state.slot;
 
   const controls = h('div.row-flex.mb',
@@ -61,6 +102,9 @@ export async function render(root) {
   );
 
   async function refresh() {
+    // Every control and every mark routes through here, so this is the one
+    // place a save has to happen for none to be missed.
+    saveState(storeKey);
     body.replaceChildren(loading('simulating the draft forward…'));
     try {
       const params = new URLSearchParams({
@@ -91,6 +135,7 @@ function board(d, numTeams, refresh) {
         'Fix: paste a rankings list into rankings.txt, then run ',
         h('code', 'node bin/oracle.mjs real adp --file rankings.txt'))
     ) : null,
+    rosterStrip(d.myRoster),
     top ? h('div.card.accent.mb',
       h('div.spread',
         h('div',
@@ -201,12 +246,37 @@ function board(d, numTeams, refresh) {
         badge(`${pos} ${n2(v)}`, v >= 1 ? 'bad' : 'warn')))
     ),
 
-    d.myRoster?.length ? frag(
-      h('div.section-head', h('h3', `Your roster so far (${d.myRoster.length})`)),
-      h('div.card.tight',
-        h('div.row-flex', ...d.myRoster.map((p) =>
-          badge(`${p.pos} ${p.name}`, 'ok')))
+  );
+}
+
+/**
+ * What I have taken so far.
+ *
+ * Sits at the top of the board because it is checked constantly during a live
+ * draft — after every pick, to see what the roster still needs — and anything
+ * below the fold may as well not exist under a thirty-second clock. Grouped by
+ * position, in the order the roster is built, so a missing starter is obvious
+ * at a glance rather than something to count out.
+ */
+function rosterStrip(myRoster) {
+  if (!myRoster?.length) return null;
+  const order = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
+  const byPos = new Map(order.map((p) => [p, []]));
+  for (const p of myRoster) {
+    if (!byPos.has(p.pos)) byPos.set(p.pos, []);
+    byPos.get(p.pos).push(p);
+  }
+  return frag(
+    h('div.section-head', h('h3', `Your roster so far (${myRoster.length})`)),
+    h('div.card.tight.mb',
+      h('div.row-flex',
+        ...[...byPos.entries()]
+          .filter(([, list]) => list.length)
+          .map(([pos, list]) => h('div.row-flex', { style: { marginRight: '14px' } },
+            posEl(pos),
+            ...list.map((p) => badge(p.name, 'ok'))
+          ))
       )
-    ) : null
+    )
   );
 }

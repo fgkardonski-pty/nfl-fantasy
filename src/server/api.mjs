@@ -233,9 +233,14 @@ export function buildApi() {
         .filter(Boolean)
     );
 
-    const pool = all('SELECT * FROM players').filter((p) => !drafted.has(p.player_id));
-    const projected = S.draftValues(league, pool);
-    const myRoster = S.draftValues(league, all('SELECT * FROM players').filter((p) => myKeys.has(p.player_id)));
+    // One read of the player table, and one valuation pass over it. Both were
+    // being done twice per board, and the second valuation re-ran the whole
+    // positional-rank setup to price the handful of players already on my
+    // roster.
+    const allPlayers = all('SELECT * FROM players');
+    const valued = S.draftValues(league, allPlayers);
+    const projected = valued.filter((p) => !drafted.has(p.player_id));
+    const myRoster = valued.filter((p) => myKeys.has(p.player_id));
 
     const opponents = S.getTeams(league.league_key)
       .filter((t) => !t.is_mine)
