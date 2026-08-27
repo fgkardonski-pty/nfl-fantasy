@@ -396,6 +396,29 @@ const COMMANDS = {
       }
       return;
     }
+    if (sub === 'fp-page') {
+      const league = S.getLeague(opts.league);
+      const season = Number(opts.season ?? league?.season ?? config.season);
+      const scoring = opts.scoring ?? (league ? fantasypros.scoringCodeFor(league.scoring) : 'HALF');
+      rule(`FANTASYPROS PAGING PROBE (season ${season}, ${scoring})`);
+      const { reported, baseline, findings } = await fantasypros.probePaging({ season, scoring });
+      out(`  baseline: ${baseline} players returned, API reports ${reported ?? '?'} available\n`);
+      for (const f of findings) {
+        const mark = f.effect === 'ENLARGED' || f.effect === 'MOVED'
+          ? `${c.green}\u2713${c.reset}` : `${c.grey}\u00b7${c.reset}`;
+        out(`  ${mark} ${f.param.padEnd(12)}=${String(f.value).padEnd(4)} HTTP ${f.status} \u00b7 ${f.players} players \u00b7 ${f.effect}`);
+        for (const sp of f.sample ?? []) out(`     ${c.grey}${sp}${c.reset}`);
+      }
+      out('');
+      const win = findings.find((f) => f.effect === 'ENLARGED' || f.effect === 'MOVED');
+      if (win) {
+        out(`  ${c.green}Found it:${c.reset} ${win.param} (${win.kind}). Paste this back and I will wire it in.`);
+      } else {
+        out(`  ${c.yellow}No paging parameter works. The 10-player cap is on the key itself.${c.reset}`);
+        out(`  ${c.grey}Fall back to pasted rankings: node bin/oracle.mjs real adp --file rankings.txt${c.reset}`);
+      }
+      return;
+    }
     if (sub === 'fp-proj') {
       const league = S.getLeague(opts.league);
       const season = Number(opts.season ?? league?.season ?? config.season);
@@ -445,7 +468,7 @@ const COMMANDS = {
       out(`${c.green}\u2713${c.reset} league configured: ${c.bold}${cfg.name}${c.reset} (${league_key})`);
       return;
     }
-    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp | fp-probe | adp --file <f>${c.reset}`);
+    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp | fp-proj | fp-probe | fp-page | adp --file <f>${c.reset}`);
     process.exit(1);
   },
 
@@ -483,6 +506,7 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real fp${c.reset}                 import rankings from the FantasyPros API (needs a key)
   ${c.cyan}real fp-proj${c.reset}            import projected stat lines (better than rankings)
   ${c.cyan}real fp-probe${c.reset}           diagnose the FantasyPros endpoint shape
+  ${c.cyan}real fp-page${c.reset}            find the undocumented paging parameter
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)
   ${c.cyan}research daemon${c.reset}         run the scheduler in the foreground

@@ -105,12 +105,76 @@ export function scoringCodeFor(leagueScoring) {
  */
 export const POSITION_GROUPS = ['QB', 'RB', 'WR', 'TE', 'K', 'DST'];
 
+/**
+ * How this deployment pages through a long list.
+ *
+ * The API answers with a `count` in the hundreds and a `players` array of ten,
+ * so it pages; the published spec just does not say how. Rather than hard-code
+ * a guess, the control lives in configuration and `real fp-page` finds it:
+ *
+ *   FANTASYPROS_PAGE_PARAM=limit   FANTASYPROS_PAGE_STYLE=size
+ *   FANTASYPROS_PAGE_PARAM=offset  FANTASYPROS_PAGE_STYLE=offset
+ *   FANTASYPROS_PAGE_PARAM=page    FANTASYPROS_PAGE_STYLE=page
+ *
+ * With `size` one request asks for everything. With `offset` or `page` the
+ * client walks the list a page at a time. Walking 941 players ten at a time is
+ * 95 requests, which is a nuisance once before a draft and nothing after that.
+ */
+const pageParam = () => config.fantasyProsPageParam || null;
+const pageStyle = () => config.fantasyProsPageStyle || 'size';
+
+/** Hard ceiling so a misbehaving endpoint can never loop forever. */
+const MAX_PAGES = 120;
+
+/**
+ * Read a whole list, paging if a paging parameter is configured.
+ *
+ * Stops on the first page that adds nobody new, which covers the case where the
+ * parameter is silently ignored — better to return the first page once than to
+ * fetch it a hundred times.
+ */
+async function fetchAll(path, params, label) {
+  const param = pageParam();
+  const first = await fetchOne(path, params, label);
+  if (!param) return first;
+
+  if (pageStyle() === 'size') {
+    const sized = await fetchOne(path, { ...params, [param]: 500 }, label);
+    return sized.players.length > first.players.length ? sized : first;
+  }
+
+  // offset / page styles: walk until we have everyone or nothing new arrives.
+  const seen = new Map();
+  for (const p of first.players) seen.set(nameKey(p), p);
+  const perPage = Math.max(1, first.players.length);
+  const target = first.reported ?? Infinity;
+
+  for (let i = 1; i < MAX_PAGES && seen.size < target; i++) {
+    const value = pageStyle() === 'page' ? i + 1 : i * perPage;
+    let page;
+    try {
+      page = await fetchOne(path, { ...params, [param]: value }, label);
+    } catch (err) {
+      log.warn(`${label}: page ${i} failed — ${err.message.split('\n')[0]}`);
+      break;
+    }
+    const before = seen.size;
+    for (const p of page.players) {
+      const k = nameKey(p);
+      if (!seen.has(k)) seen.set(k, p);
+    }
+    if (seen.size === before) break; // nothing new — the parameter did nothing
+  }
+
+  return { players: [...seen.values()], reported: first.reported };
+}
+
 /** One request, returning the parsed players alongside the count the API itself reports. */
-async function fetchRankingPage(season, params) {
-  const { res, url } = await get(`/nfl/${season}/consensus-rankings`, params);
+async function fetchOne(path, params, label) {
+  const { res, url } = await get(path, params);
   if (!res.ok) {
     throw new Error(
-      `FantasyPros rankings failed: HTTP ${res.status}${res.error ? ` — ${res.error}` : ''}\n` +
+      `FantasyPros ${label} failed: HTTP ${res.status}${res.error ? ` — ${res.error}` : ''}\n` +
       `  ${redact(url)}\n` +
       (res.status === 403
         ? '  A 403 here usually means an invalid parameter value rather than a bad key — ' +
@@ -122,6 +186,10 @@ async function fetchRankingPage(season, params) {
     players: extractPlayers(res.json),
     reported: Number.isFinite(Number(res.json?.count)) ? Number(res.json.count) : null,
   };
+}
+
+async function fetchRankingPage(season, params) {
+  return fetchAll(`/nfl/${season}/consensus-rankings`, params, 'rankings');
 }
 
 export const nameKey = (p) => `${String(p.name ?? '').toLowerCase().replace(/[^a-z]/g, '')}|${p.pos ?? ''}`;
@@ -276,19 +344,19 @@ export async function fetchProjections({ season, week = null, positions = POSITI
   let any = false;
 
   for (const position of positions) {
-    const { res, url } = await get(`/nfl/${season}/projections`, { position, week });
-    if (!res.ok) {
+    let page;
+    try {
+      page = await fetchAll(`/nfl/${season}/projections`, { position, week }, 'projections');
+    } catch (err) {
       // A single position failing should not cost the other five.
-      log.warn(`projections: ${position} failed — HTTP ${res.status} ${redact(url)}`);
+      log.warn(`projections: ${position} failed — ${err.message.split('\n')[0]}`);
       continue;
     }
     any = true;
-    const rows = extractPlayers(res.json);
-    const reported = Number(res.json?.count);
-    if (Number.isFinite(reported) && rows.length < reported) {
-      truncated.push(`${position} (${rows.length} of ${reported})`);
+    if (page.reported != null && page.players.length < page.reported) {
+      truncated.push(`${position} (${page.players.length} of ${page.reported})`);
     }
-    for (const r of rows) {
+    for (const r of page.players) {
       const key = nameKey(r);
       if (!merged.has(key)) merged.set(key, r);
     }
@@ -393,6 +461,79 @@ function normalisePlayer(raw) {
 function redact(url) {
   const key = config.fantasyProsKey;
   return key ? url.split(key).join('***') : url;
+}
+
+/**
+ * Candidate paging parameters, in the order they are worth trying.
+ *
+ * The published spec documents none of these on the rankings or projections
+ * endpoints, yet those endpoints answer with a `count` in the hundreds and a
+ * `players` array of exactly ten. Something is paginating, and the control for
+ * it is simply undocumented. API Gateway rejects a bad value for a parameter it
+ * knows about, but passes unknown parameters through to the backend, so trying
+ * a battery of conventional names is safe and costs one request each.
+ *
+ * Both halves matter. A page-SIZE parameter is the clean fix. But an OFFSET
+ * parameter is just as good in practice: 941 players at ten a page is 95
+ * requests, done once before a draft, which is nothing.
+ */
+const PAGE_SIZE_PARAMS = ['limit', 'max_results', 'per_page', 'page_size', 'pageSize', 'max', 'results', 'num'];
+const OFFSET_PARAMS = ['offset', 'start', 'page', 'skip', 'from'];
+
+const nameSetOf = (players) => players.map((p) => p.name).join('|');
+
+/**
+ * Find whichever paging control this API actually honours.
+ *
+ * Reports, for each candidate, whether it enlarged the page or moved it. A
+ * candidate that does neither is silently ignored by the backend and useless.
+ */
+export async function probePaging({ season, scoring = 'HALF' } = {}) {
+  const path = `/nfl/${season}/consensus-rankings`;
+  const common = { position: 'ALL', type: 'DRAFT', scoring: String(scoring).toUpperCase(), week: 0 };
+
+  const { res: baseRes } = await get(path, common, { noCache: true });
+  if (!baseRes.ok) throw new Error(`baseline request failed: HTTP ${baseRes.status}`);
+  const basePlayers = extractPlayers(baseRes.json);
+  const baseSet = nameSetOf(basePlayers);
+  const reported = Number(baseRes.json?.count) || null;
+
+  const findings = [];
+
+  for (const param of PAGE_SIZE_PARAMS) {
+    const { res } = await get(path, { ...common, [param]: 200 }, { noCache: true });
+    const players = res.ok ? extractPlayers(res.json) : [];
+    findings.push({
+      param, kind: 'page-size', value: 200, status: res.status,
+      players: players.length,
+      effect: !res.ok ? 'rejected'
+        : players.length > basePlayers.length ? 'ENLARGED'
+        : 'ignored',
+    });
+    if (players.length > basePlayers.length) break; // found it; stop spending calls
+  }
+
+  // Only bother with offsets if nothing enlarged the page.
+  if (!findings.some((f) => f.effect === 'ENLARGED')) {
+    for (const param of OFFSET_PARAMS) {
+      // page/offset differ in origin: page 2 is the second page, offset 10 is
+      // the eleventh row. Both land past the first ten either way.
+      const value = param === 'page' ? 2 : basePlayers.length;
+      const { res } = await get(path, { ...common, [param]: value }, { noCache: true });
+      const players = res.ok ? extractPlayers(res.json) : [];
+      findings.push({
+        param, kind: 'offset', value, status: res.status,
+        players: players.length,
+        effect: !res.ok ? 'rejected'
+          : players.length && nameSetOf(players) !== baseSet ? 'MOVED'
+          : 'ignored',
+        sample: players.slice(0, 2).map((p) => `${p.name} (${p.pos}) rank ${p.rank}`),
+      });
+      if (players.length && nameSetOf(players) !== baseSet) break;
+    }
+  }
+
+  return { reported, baseline: basePlayers.length, findings };
 }
 
 /**

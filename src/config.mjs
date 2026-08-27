@@ -60,6 +60,9 @@ export const config = {
   fantasyProsBase: env('FANTASYPROS_API_BASE'),
   fantasyProsPath: env('FANTASYPROS_RANKINGS_PATH'),
   fantasyProsAuth: env('FANTASYPROS_AUTH_STYLE'),
+  // Undocumented paging control; `real fp-page` finds which name works.
+  fantasyProsPageParam: env('FANTASYPROS_PAGE_PARAM'),
+  fantasyProsPageStyle: env('FANTASYPROS_PAGE_STYLE'),
   anthropicKey: env('ANTHROPIC_API_KEY'),
   llmModel: env('ORACLE_LLM_MODEL', 'claude-sonnet-5'),
 
