@@ -235,6 +235,11 @@ CREATE TABLE IF NOT EXISTS adp (
   source    TEXT NOT NULL,
   adp       REAL,
   adp_sd    REAL,
+  -- ADP says when a player leaves the board. These say how good the experts
+  -- think he is, which is the separate question valuation actually asks.
+  ecr       REAL,      -- overall expert consensus rank
+  tier       INTEGER,  -- the source's own tier break
+  pos_rank  INTEGER,   -- rank within his position, e.g. the 7 in RB7
   PRIMARY KEY (player_id, season, source)
 );
 

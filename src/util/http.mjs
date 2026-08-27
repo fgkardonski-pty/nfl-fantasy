@@ -25,6 +25,10 @@ const buckets = new Map();
 const DEFAULT_LIMITS = {
   'fantasysports.yahooapis.com': { perMinute: 90 },
   'api.sleeper.app': { perMinute: 300 },
+  // Deliberately conservative. Rapid-fire diagnostic requests to this host
+  // started failing at the network level partway through a probe, which reads
+  // as a rejected parameter and is not one.
+  'api.fantasypros.com': { perMinute: 30 },
   'api.the-odds-api.com': { perMinute: 20 },
   'api.open-meteo.com': { perMinute: 60 },
   'github.com': { perMinute: 60 },

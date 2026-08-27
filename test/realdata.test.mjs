@@ -15,7 +15,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oracle-realdata-'));
 process.env.ORACLE_DB = path.join(tmpDir, 'test.db');
 process.env.ORACLE_LOG_LEVEL = 'silent';
 
-const { parseRankingLines, importAdpFromText, setupRealLeague } = await import('../src/realdata.mjs');
+const { parseRankingLines, importAdpFromText, setupRealLeague, importRankingsFromCsv } = await import('../src/realdata.mjs');
 const S = await import('../src/service.mjs');
 const { closeDb, upsertMany } = await import('../src/db/index.mjs');
 
@@ -220,4 +220,97 @@ test('week 0 projections never count as observed games played', async () => {
   const [valued] = S.draftValues(league, all("SELECT * FROM players WHERE player_id = 'proj1'"));
   assert.equal(valued.games, 0,
     'a forecast is not a game played — counting it as one would also corrupt every variance estimate');
+});
+
+// ---------------------------------------------------------------------------
+// CSV import: rank and ADP are different numbers and must stay different
+// ---------------------------------------------------------------------------
+
+/**
+ * The CSV carries both a consensus rank and the market's ADP, and they
+ * disagree — often sharply. Conflating them is the mistake this pins against.
+ *
+ * Positional rank answers "how good do the experts think he is", and drives
+ * valuation through the archetype curves. ADP answers "when will he actually be
+ * gone", and drives whether it is safe to wait a round. A kicker ranked 183rd
+ * who goes at pick 124 is not a better kicker for being over-drafted; pricing
+ * him off his ADP would say exactly that.
+ */
+const CSV_HEADER =
+  '"RK",TIERS,"PLAYER NAME",TEAM,"POS","BYE WEEK","UPSIDE ","BUST ","SOS SEASON","ECR VS. ADP"';
+
+test('CSV import keeps the published positional rank separate from ADP', async () => {
+  const { upsertMany, all, get } = await import('../src/db/index.mjs');
+  const roster = [
+    ['csv1', 'Alpha Back', 'RB'], ['csv2', 'Beta Back', 'RB'],
+    ['csv3', 'Gamma Back', 'RB'], ['csv4', 'Delta Kicker', 'K'],
+  ];
+  upsertMany('players', ['player_id', 'name', 'pos', 'updated_at'],
+    roster.map(([id, name, pos]) => ({ player_id: id, name, pos, updated_at: Date.now() })),
+    ['player_id']);
+
+  // Gamma is ranked third but goes second; the market disagrees with the
+  // experts about him, which is exactly the case that must not be flattened.
+  const csv = [
+    CSV_HEADER,
+    '"1",1,"Alpha Back",DET,"RB1","6","-","-","-","0"',
+    '"2",1,"Beta Back",ATL,"RB2","11","-","-","-","+4"',
+    '"3",1,"Gamma Back",IND,"RB3","13","-","-","-","-1"',
+    '"183",10,"Delta Kicker",DAL,"K1","14","-","-","-","-59"',
+  ].join('\n');
+
+  const report = importRankingsFromCsv(csv, { season: 2031, source: 'test-csv' });
+  assert.equal(report.matched, 4);
+
+  const rows = all(
+    'SELECT player_id, adp, ecr, pos_rank, tier FROM adp WHERE season = ? AND source = ? ORDER BY ecr',
+    [2031, 'test-csv']
+  );
+  assert.deepEqual(rows.map((r) => r.pos_rank), [1, 2, 3, 1], 'published positional ranks');
+  assert.deepEqual(rows.map((r) => r.adp), [1, 6, 2, 124], 'market ADP, reconstructed');
+  assert.deepEqual(rows.map((r) => r.ecr), [1, 2, 3, 183], 'consensus rank kept as published');
+
+  // Beta is RB2 by consensus but goes at 6, behind Gamma at 2. Both facts are
+  // recorded; neither has overwritten the other.
+  const beta = rows.find((r) => r.player_id === 'csv2');
+  const gamma = rows.find((r) => r.player_id === 'csv3');
+  assert.ok(beta.pos_rank < gamma.pos_rank, 'Beta is rated higher');
+  assert.ok(beta.adp > gamma.adp, 'yet Gamma comes off the board first');
+
+  // Bye weeks land on the player, where they are needed every week of the year.
+  assert.equal(get('SELECT bye_week FROM players WHERE player_id = ?', ['csv2']).bye_week, 11);
+});
+
+test('valuation prices a player by his published rank, not by his ADP', async () => {
+  const { upsertMany, run } = await import('../src/db/index.mjs');
+  setupRealLeague({
+    leagueKey: 'csvtest.l.1', name: 'CSV Test', season: 2032, numTeams: 12,
+    scoring: { rec: 0.5, rush_yd: 0.1, rec_yd: 0.1, pass_yd: 0.04, rush_td: 6, rec_td: 6, pass_td: 4 },
+    rosterSlots: [{ slot: 'QB', count: 1 }, { slot: 'RB', count: 2 }, { slot: 'WR', count: 2 }],
+  });
+
+  upsertMany('players', ['player_id', 'name', 'pos', 'updated_at'], [
+    { player_id: 'vr1', name: 'Elite Back', pos: 'RB', updated_at: Date.now() },
+    { player_id: 'vr2', name: 'Hyped Back', pos: 'RB', updated_at: Date.now() },
+  ], ['player_id']);
+
+  // Hyped Back has the BETTER (earlier) ADP but the WORSE published rank.
+  // Deriving positional rank by sorting ADP would price him as the better back.
+  const csv = [
+    CSV_HEADER,
+    '"1",1,"Elite Back",DET,"RB1","6","-","-","-","+30"',
+    '"40",4,"Hyped Back",ATL,"RB2","11","-","-","-","-25"',
+  ].join('\n');
+  importRankingsFromCsv(csv, { season: 2032, source: 'fantasypros-csv' });
+
+  const valued = S.draftValues(S.getLeague('csvtest.l.1'),
+    (await import('../src/db/index.mjs')).all("SELECT * FROM players WHERE player_id LIKE 'vr%'"));
+  const elite = valued.find((p) => p.player_id === 'vr1');
+  const hyped = valued.find((p) => p.player_id === 'vr2');
+
+  assert.ok(hyped.adp < elite.adp, 'the hyped back does come off the board first');
+  assert.ok(elite.mean > hyped.mean,
+    `the RB1 must still be worth more per game (RB1 ${elite.mean.toFixed(1)} vs RB2 ${hyped.mean.toFixed(1)})`);
+  assert.match(elite.basis, /RB1/);
+  run("DELETE FROM leagues WHERE league_key = 'csvtest.l.1'");
 });

@@ -203,12 +203,32 @@ export function draftValues(league, players) {
   // their order within the position. This is what turns a global consensus
   // ranking into "he is the RB7", which is the input the archetype curves need.
   const posRankOf = new Map();
+  const publishedRank = new Set();
   {
+    // Prefer the positional rank as PUBLISHED. Deriving it by sorting ADP
+    // conflates two different things: ADP is where the market takes a player,
+    // and the market reaches. Kickers are the clearest case — they go dozens of
+    // picks before their consensus rank, so an ADP-derived ordering would price
+    // the most over-drafted kicker as though he were the best one.
+    for (const r of all(
+      'SELECT player_id, pos_rank FROM adp WHERE season = ? AND pos_rank IS NOT NULL',
+      [season]
+    )) { posRankOf.set(r.player_id, r.pos_rank); publishedRank.add(r.player_id); }
+
+    // Anyone the publisher did not rank still needs an ordering, and ADP within
+    // the position is the best available stand-in.
     const withAdp = players
+      .filter((p) => !posRankOf.has(p.player_id))
       .map((p) => ({ id: p.player_id, pos: p.pos, adp: adpOf(p.player_id, season) }))
       .filter((x) => x.adp != null)
       .sort((a, b) => a.adp - b.adp);
+    // Continue past the published ranks rather than restarting at 1, or an
+    // unranked player would be priced as his position's best.
     const counters = {};
+    for (const p of players) {
+      const r = posRankOf.get(p.player_id);
+      if (r != null) counters[p.pos] = Math.max(counters[p.pos] ?? 0, r);
+    }
     for (const x of withAdp) {
       counters[x.pos] = (counters[x.pos] ?? 0) + 1;
       posRankOf.set(x.id, counters[x.pos]);
@@ -278,7 +298,12 @@ export function draftValues(league, players) {
     } else if (adp != null) {
       value = adpCurve(p.pos, adp, p.player_id);
       const rank = posRankOf.get(p.player_id);
-      basis = `ADP ${adp.toFixed(1)} -> ${p.pos}${rank ?? '?'}, priced in league scoring`;
+      // Say where the rank came from. A published rank and one inferred from
+      // ADP deserve different amounts of trust, and the difference is visible
+      // in the app rather than buried.
+      basis = publishedRank.has(p.player_id)
+        ? `${p.pos}${rank}, priced in league scoring (ADP ${adp.toFixed(1)})`
+        : `ADP ${adp.toFixed(1)} -> ${p.pos}${rank ?? '?'} (inferred), priced in league scoring`;
     } else {
       value = expectedPointsAtRank(p.pos, UNRANKED[p.pos] ?? 60, league.scoring);
       basis = 'unranked (no ADP) — priced as roster filler in league scoring';

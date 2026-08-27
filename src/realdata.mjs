@@ -18,6 +18,7 @@
 import { upsertMany, run, get, meta, all } from './db/index.mjs';
 import * as sleeper from './providers/sleeper.mjs';
 import * as fantasypros from './providers/fantasypros.mjs';
+import * as fpcsv from './providers/fpcsv.mjs';
 import { normaliseName } from './providers/sleeper.mjs';
 import { DEFAULT_SCORING } from './engine/scoring.mjs';
 import { logger } from './util/log.mjs';
@@ -269,6 +270,71 @@ export async function importRankingsFromFantasyPros({ season, scoring = 'HALF', 
     truncated: ranked.truncated ?? [],
     unmatched,
     attribution: fantasypros.ATTRIBUTION,
+  };
+}
+
+/**
+ * Import a FantasyPros draft-rankings CSV export.
+ *
+ * This is the primary rankings path, not a fallback. The API returns ten
+ * players per request with no working paging parameter, while the export
+ * carries the full five-hundred-player board, and it carries more per player
+ * besides: the positional rank, the publisher's own tiers, and bye weeks.
+ *
+ * Three things are stored, and they answer different questions:
+ *
+ *   pos_rank  how good the experts think he is. This is what gets turned into
+ *             an archetype stat line and priced through the league's scoring.
+ *   adp       when the market will actually take him. This is what the draft
+ *             board uses to decide whether a player will still be there next
+ *             time round, which is the whole basis of VONA.
+ *   tier      where the cliffs are, as the publisher drew them.
+ *
+ * Conflating the first two is the classic mistake. A kicker ranked 183rd who
+ * goes at pick 124 is not a better kicker for going early; he is a worse pick,
+ * and only keeping the two numbers separate shows that.
+ */
+export function importRankingsFromCsv(text, { season, source = 'fantasypros-csv' } = {}) {
+  const { rows: parsed, skipped } = fpcsv.parseRankingsCsv(text);
+  if (!parsed.length) {
+    return { matched: 0, total: 0, unmatched: [], note: 'No player rows found in that file.' };
+  }
+
+  const { rows, unmatched } = matchToLocalPlayers(parsed, (r) => ({
+    adp: r.adp,
+    ecr: r.rank,
+    tier: r.tier,
+    pos_rank: r.posRank,
+    bye: r.bye,
+  }));
+
+  if (rows.length) {
+    upsertMany('adp', ['player_id', 'season', 'source', 'adp', 'adp_sd', 'ecr', 'tier', 'pos_rank'],
+      rows.map((r) => ({
+        player_id: r.player_id, season, source,
+        adp: r.adp, adp_sd: null, ecr: r.ecr, tier: r.tier, pos_rank: r.pos_rank,
+      })),
+      ['player_id', 'season', 'source']);
+
+    // Bye weeks are on the player, not the ranking: they matter every week of
+    // the season, and a roster that stacks them loses games it should not.
+    const withBye = rows.filter((r) => Number.isFinite(r.bye));
+    for (const r of withBye) {
+      run('UPDATE players SET bye_week = ? WHERE player_id = ?', [r.bye, r.player_id]);
+    }
+    log.info(`FantasyPros CSV: ${rows.length} ranked, ${withBye.length} bye weeks set`);
+  }
+
+  const byPos = {};
+  for (const r of parsed) byPos[r.pos ?? '?'] = (byPos[r.pos ?? '?'] ?? 0) + 1;
+
+  return {
+    matched: rows.length,
+    total: parsed.length,
+    skipped,
+    byPos,
+    unmatched,
+    attribution: fpcsv.ATTRIBUTION,
   };
 }
 

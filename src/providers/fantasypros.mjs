@@ -506,7 +506,11 @@ export async function probePaging({ season, scoring = 'HALF' } = {}) {
     findings.push({
       param, kind: 'page-size', value: 200, status: res.status,
       players: players.length,
-      effect: !res.ok ? 'rejected'
+      // Status 0 means the request never completed — a timeout or a blocked
+      // connection. That is NOT the API rejecting the parameter, and calling it
+      // "rejected" would report an untested candidate as a tested one.
+      effect: res.status === 0 ? 'no answer'
+        : !res.ok ? 'rejected'
         : players.length > basePlayers.length ? 'ENLARGED'
         : 'ignored',
     });
@@ -524,7 +528,8 @@ export async function probePaging({ season, scoring = 'HALF' } = {}) {
       findings.push({
         param, kind: 'offset', value, status: res.status,
         players: players.length,
-        effect: !res.ok ? 'rejected'
+        effect: res.status === 0 ? 'no answer'
+          : !res.ok ? 'rejected'
           : players.length && nameSetOf(players) !== baseSet ? 'MOVED'
           : 'ignored',
         sample: players.slice(0, 2).map((p) => `${p.name} (${p.pos}) rank ${p.rank}`),

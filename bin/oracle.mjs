@@ -17,7 +17,7 @@ import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextOwnPick } from '../src/engine/draft.mjs';
-import { seedRealPlayers, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros } from '../src/realdata.mjs';
+import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -368,6 +368,30 @@ const COMMANDS = {
       }
       return;
     }
+    if (sub === 'fp-csv') {
+      const file = opts.file ?? opts._file;
+      if (!file) {
+        out(`${c.red}Usage:${c.reset} node bin/oracle.mjs real fp-csv --file <FantasyPros_..._Rankings.csv>`);
+        out(`${c.grey}Download from fantasypros.com/nfl/rankings/ — the "Download CSV" button.${c.reset}`);
+        process.exit(1);
+      }
+      const league = S.getLeague(opts.league);
+      const season = Number(opts.season ?? league?.season ?? config.season);
+      const text = fs.readFileSync(path.resolve(file), 'utf8');
+      const report = importRankingsFromCsv(text, { season });
+      out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} ranked players (season ${season})`);
+      if (report.byPos) {
+        out(`${c.grey}  ${Object.entries(report.byPos).map(([k, v]) => `${k} ${v}`).join('  ')}${c.reset}`);
+      }
+      if (report.matched < 150) {
+        out(`${c.yellow}! only ${report.matched} matched — a 16-team draft is 256 picks. Paste this output back.${c.reset}`);
+      }
+      if (report.unmatched?.length) {
+        out(`${c.grey}unmatched (${report.unmatched.length}): ${report.unmatched.slice(0, 12).join(', ')}${report.unmatched.length > 12 ? ' \u2026' : ''}${c.reset}`);
+      }
+      out(`${c.grey}${report.attribution ?? ''}${c.reset}`);
+      return;
+    }
     if (sub === 'fp-probe') {
       const league = S.getLeague(opts.league);
       const season = Number(opts.season ?? league?.season ?? config.season);
@@ -411,11 +435,16 @@ const COMMANDS = {
       }
       out('');
       const win = findings.find((f) => f.effect === 'ENLARGED' || f.effect === 'MOVED');
+      const untested = findings.filter((f) => f.effect === 'no answer');
       if (win) {
         out(`  ${c.green}Found it:${c.reset} ${win.param} (${win.kind}). Paste this back and I will wire it in.`);
       } else {
-        out(`  ${c.yellow}No paging parameter works. The 10-player cap is on the key itself.${c.reset}`);
-        out(`  ${c.grey}Fall back to pasted rankings: node bin/oracle.mjs real adp --file rankings.txt${c.reset}`);
+        out(`  ${c.yellow}No paging parameter enlarged or moved the page.${c.reset}`);
+        if (untested.length) {
+          out(`  ${c.grey}${untested.length} candidate(s) got no answer at all — those were not actually tested.${c.reset}`);
+        }
+        out(`  ${c.grey}Use the CSV export instead, which carries the whole board:${c.reset}`);
+        out(`  ${c.cyan}node bin/oracle.mjs real fp-csv --file <FantasyPros_..._Rankings.csv>${c.reset}`);
       }
       return;
     }
@@ -468,7 +497,7 @@ const COMMANDS = {
       out(`${c.green}\u2713${c.reset} league configured: ${c.bold}${cfg.name}${c.reset} (${league_key})`);
       return;
     }
-    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp | fp-proj | fp-probe | fp-page | adp --file <f>${c.reset}`);
+    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp-csv --file <f> | fp | fp-proj | fp-probe | fp-page | adp --file <f>${c.reset}`);
     process.exit(1);
   },
 
@@ -505,6 +534,7 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real league${c.reset} --file f.json  configure a real league from hand-entered settings
   ${c.cyan}real fp${c.reset}                 import rankings from the FantasyPros API (needs a key)
   ${c.cyan}real fp-proj${c.reset}            import projected stat lines (better than rankings)
+  ${c.cyan}real fp-csv --file <f>${c.reset}  import a FantasyPros rankings CSV export (the full board)
   ${c.cyan}real fp-probe${c.reset}           diagnose the FantasyPros endpoint shape
   ${c.cyan}real fp-page${c.reset}            find the undocumented paging parameter
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list

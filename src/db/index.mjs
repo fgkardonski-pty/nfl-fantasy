@@ -25,9 +25,44 @@ export function getDb(dbPath = config.dbPath) {
   db.exec('PRAGMA busy_timeout = 5000;');
   const schema = fs.readFileSync(path.join(config.root, 'src/db/schema.sql'), 'utf8');
   db.exec(schema);
+  migrate(db);
   _db = db;
   log.debug(`opened ${dbPath}`);
   return db;
+}
+
+/**
+ * Additive column migrations.
+ *
+ * The schema file is all CREATE TABLE IF NOT EXISTS, which means an existing
+ * database never picks up a column added to it later. Anyone who has already
+ * run this platform would silently keep the old shape, so new columns are added
+ * here instead, guarded by what the table actually has.
+ */
+const ADDED_COLUMNS = {
+  adp: {
+    // Consensus rank, tier and positional rank, as published. ADP alone says
+    // when a player leaves the board; these say how good the experts think he
+    // is, which is a different question and the one valuation needs.
+    ecr: 'REAL',
+    tier: 'INTEGER',
+    pos_rank: 'INTEGER',
+  },
+};
+
+function migrate(db) {
+  for (const [table, columns] of Object.entries(ADDED_COLUMNS)) {
+    let existing;
+    try {
+      existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name));
+    } catch { continue; }          // table absent entirely; schema.sql owns it
+    if (!existing.size) continue;
+    for (const [name, type] of Object.entries(columns)) {
+      if (existing.has(name)) continue;
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+      log.debug(`migrated: ${table}.${name} added`);
+    }
+  }
 }
 
 export function closeDb() {
