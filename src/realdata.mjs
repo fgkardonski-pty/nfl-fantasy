@@ -241,22 +241,83 @@ export function setupRealLeague(cfg) {
 }
 
 /**
- * Import rankings straight from the FantasyPros API.
+ * Import rankings from the FantasyPros API.
  *
- * Preferred over the pasted-text path: it carries POSITION as well as name, so
- * two players who share a surname can be told apart — the text importer has to
- * guess. It also refreshes on demand, which matters through preseason when
- * rankings move daily on injury news.
+ * Preferred over the pasted-text path: it carries POSITION alongside the name,
+ * so players sharing a surname are matched unambiguously rather than guessed
+ * at, and it refreshes on demand through preseason as rankings move on news.
  */
-export async function importRankingsFromFantasyPros({ season, scoring = 'HALF' } = {}) {
-  const ranked = await fantasypros.fetchRankings({ season, scoring });
+export async function importRankingsFromFantasyPros({ season, scoring = 'HALF', type = 'DRAFT' } = {}) {
+  const ranked = await fantasypros.fetchRankings({ season, scoring, type });
   if (!ranked.length) {
     return { matched: 0, total: 0, unmatched: [], note: 'FantasyPros returned no players.' };
   }
+  const { rows, unmatched } = matchToLocalPlayers(ranked, (r, i) => ({
+    adp: r.adp ?? r.rank ?? i + 1,
+  }));
 
+  if (rows.length) {
+    upsertMany('adp', ['player_id', 'season', 'source', 'adp', 'adp_sd'],
+      rows.map((r) => ({ player_id: r.player_id, season, source: 'fantasypros', adp: r.adp, adp_sd: null })),
+      ['player_id', 'season', 'source']);
+  }
+  log.info(`FantasyPros rankings: ${rows.length}/${ranked.length} matched`);
+  return { matched: rows.length, total: ranked.length, unmatched, attribution: fantasypros.ATTRIBUTION };
+}
+
+/**
+ * Import PROJECTED STAT LINES and store them as week-0 stats.
+ *
+ * This is the meaningful upgrade over rankings. A ranking only says a player is
+ * the seventh-best back, which has to be turned into value through a positional
+ * archetype. A projection says what he will actually DO, and that can be priced
+ * through the league's own scoring table directly.
+ *
+ * In a league paying per completion and per first down the gap is large: two
+ * quarterbacks with identical yards and touchdowns can differ by more than five
+ * points a game on completion volume alone — a difference no published ranking
+ * expresses, because it does not exist in the scoring those rankings assume.
+ *
+ * Stored at week 0 to mark them as PROJECTED rather than observed, so real
+ * results never get mixed in with forecasts once games are played.
+ */
+export async function importProjectionsFromFantasyPros({ season, week = null } = {}) {
+  const rows = await fantasypros.fetchProjections({ season, position: 'ALL', week });
+  if (!rows.length) {
+    return { matched: 0, total: 0, unmatched: [], note: 'FantasyPros returned no projections.' };
+  }
+
+  const { rows: matched, unmatched } = matchToLocalPlayers(rows, (r) => ({
+    statLine: fantasypros.toStatLine(r, { gamesPlayed: r.games ?? 17 }),
+  }));
+
+  const statRows = matched
+    .filter((m) => m.statLine && Object.keys(m.statLine).length)
+    .map((m) => ({
+      player_id: m.player_id,
+      season,
+      week: 0,
+      opponent: null,
+      stats: JSON.stringify(m.statLine),
+    }));
+
+  if (statRows.length) {
+    upsertMany('player_stats', ['player_id', 'season', 'week', 'opponent', 'stats'],
+      statRows, ['player_id', 'season', 'week']);
+  }
+  log.info(`FantasyPros projections: ${statRows.length}/${rows.length} matched`);
+  return {
+    matched: statRows.length, total: rows.length, unmatched,
+    attribution: fantasypros.ATTRIBUTION,
+  };
+}
+
+/**
+ * Match provider rows onto local players by normalised name, disambiguating
+ * with position where the provider supplies one.
+ */
+function matchToLocalPlayers(providerRows, buildExtra) {
   const locals = all('SELECT player_id, name, pos FROM players');
-  // Index by name+position first, falling back to name alone. Position makes
-  // the match unambiguous where a name is shared.
   const byNamePos = new Map();
   const byName = new Map();
   for (const p of locals) {
@@ -269,30 +330,18 @@ export async function importRankingsFromFantasyPros({ season, scoring = 'HALF' }
   const rows = [];
   const unmatched = [];
   const seen = new Set();
-  ranked.forEach((r, i) => {
+  providerRows.forEach((r, i) => {
     const n = normaliseName(r.name);
     let hit = r.pos ? byNamePos.get(`${n}|${r.pos}`) : null;
     if (!hit) {
       const candidates = byName.get(n) ?? [];
-      // Only fall back to a name-only match when it is unambiguous.
+      // Only accept a name-only match when it is unambiguous.
       hit = candidates.length === 1 ? candidates[0] : null;
     }
     if (!hit) { unmatched.push(`${r.name}${r.pos ? ` (${r.pos})` : ''}`); return; }
     if (seen.has(hit.player_id)) return;
     seen.add(hit.player_id);
-    rows.push({
-      player_id: hit.player_id,
-      season,
-      source: 'fantasypros',
-      adp: r.adp ?? r.rank ?? i + 1,
-      adp_sd: null,
-    });
+    rows.push({ player_id: hit.player_id, ...buildExtra(r, i) });
   });
-
-  if (rows.length) {
-    upsertMany('adp', ['player_id', 'season', 'source', 'adp', 'adp_sd'], rows,
-      ['player_id', 'season', 'source']);
-  }
-  log.info(`FantasyPros import: ${rows.length}/${ranked.length} matched`);
-  return { matched: rows.length, total: ranked.length, unmatched, attribution: fantasypros.ATTRIBUTION };
+  return { rows, unmatched };
 }

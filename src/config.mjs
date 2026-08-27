@@ -55,6 +55,7 @@ export const config = {
   fantasyProsKey: env('FANTASYPROS_API_KEY'),
   fantasyProsBase: env('FANTASYPROS_API_BASE', 'https://api.fantasypros.com/public/v2'),
   fantasyProsPath: env('FANTASYPROS_RANKINGS_PATH'),
+  fantasyProsAuth: env('FANTASYPROS_AUTH_STYLE'),
   anthropicKey: env('ANTHROPIC_API_KEY'),
   llmModel: env('ORACLE_LLM_MODEL', 'claude-sonnet-5'),
 

@@ -1,27 +1,24 @@
 /**
- * FantasyPros public API — consensus rankings and ADP.
+ * FantasyPros public API v2 — consensus rankings and projected stat lines.
  *
- * Why this matters: the draft engine keys its archetype curves off a player's
- * positional rank, and models what opponents will do off ADP. Both come from
- * here. Without them every player at a position is priced identically and the
- * board is meaningless (see the draft board's coverage warning).
+ * Written against the published OpenAPI specification, so the endpoint shapes,
+ * required parameters and enum values below are taken from the spec rather than
+ * inferred.
  *
- * TERMS. FantasyPros issues these keys for PERSONAL, NON-COMMERCIAL use. This
- * platform is self-hosted, single-operator, and never redistributes what it
- * fetches — which is squarely inside those terms. Two obligations are worth
- * stating in code because they are easy to violate by accident:
- *   - Do not use the data to build a service competing with FantasyPros.
- *   - Credit FantasyPros when publishing analysis derived from it. The war room
- *     shows an attribution line wherever these rankings are used.
- * Player image URLs are licensed to FantasyPros from a third party and are
- * deliberately NOT imported here.
+ * WHY BOTH ENDPOINTS. Rankings give a positional order, which the draft board
+ * needs to tell players apart and to model what opponents will do. Projections
+ * give actual projected STAT LINES, which is strictly better: they can be
+ * scored through the league's own rules instead of approximated from a
+ * positional archetype. A league paying 0.5 per completion cares enormously
+ * about the difference between a 380-completion quarterback and a 300-completion
+ * one, and only the projections carry that.
  *
- * ENDPOINT UNCERTAINTY. This client was written without live access to the API,
- * so the exact response shape is not confirmed. Rather than hardcode a guess
- * that fails silently, every request path is overridable and `probe()` reports
- * exactly what came back. Run the probe once after getting a key; if the
- * default path is wrong, set FANTASYPROS_RANKINGS_PATH and nothing else has to
- * change.
+ * TERMS. Keys are issued for PERSONAL, NON-COMMERCIAL use. This platform is
+ * self-hosted, single-operator, and redistributes nothing. Two obligations are
+ * stated here because they are easy to breach by accident: do not build a
+ * service competing with FantasyPros, and credit them when publishing derived
+ * analysis. Player image URLs are licensed to them by a third party and are
+ * deliberately not imported.
  */
 import config from '../config.mjs';
 import { request } from '../util/http.mjs';
@@ -29,29 +26,52 @@ import { logger } from '../util/log.mjs';
 
 const log = logger('fantasypros');
 
-export const ATTRIBUTION = 'Rankings and ADP: FantasyPros.com';
+export const ATTRIBUTION = 'Rankings and projections: FantasyPros.com';
 
-/** Candidate rankings paths, tried in order by probe(). */
-const CANDIDATE_PATHS = [
-  '/json/nfl/{season}/consensus-rankings?type=draft&scoring={scoring}&position=ALL&week=0',
-  '/json/nfl/{season}/consensus-rankings?type=adp&scoring={scoring}&position=ALL&week=0',
-  '/json/nfl/consensus-rankings?type=draft&scoring={scoring}&position=ALL',
-];
+/** Spec: securitySchemes.api_key = apiKey in header, name x-api-key. */
+const AUTH_HEADER = 'x-api-key';
+
+/** Spec: servers[0].url */
+const DEFAULT_BASE = 'https://api.fantasypros.com/public/v2/json';
+
+/**
+ * Spec: NFLRankingTypes. These are UPPERCASE — sending a lowercase value fails
+ * API Gateway's request validation with a 403 that reads like an auth failure,
+ * which is exactly how this was first mis-diagnosed.
+ */
+export const RANKING_TYPES = ['DRAFT', 'ADP', 'PRESEASON', 'ROS', 'WW', 'DYNASTY'];
+
+/** Spec: NFLScoringTypes. */
+export const SCORING_TYPES = ['STD', 'PPR', 'HALF'];
 
 export const isConfigured = () => Boolean(config.fantasyProsKey);
 
-function buildUrl(pathTemplate, { season, scoring }) {
-  const base = (config.fantasyProsBase || 'https://api.fantasypros.com/public/v2').replace(/\/+$/, '');
-  const path = pathTemplate
-    .replace('{season}', String(season))
-    .replace('{scoring}', scoring);
-  return `${base}${path.startsWith('/') ? path : `/${path}`}`;
+const base = () => (config.fantasyProsBase || DEFAULT_BASE).replace(/\/+$/, '');
+
+async function get(path, params, { noCache = false } = {}) {
+  if (!isConfigured()) {
+    throw new Error(
+      'FANTASYPROS_API_KEY is not set in .env. Request a personal key at https://api.fantasypros.com'
+    );
+  }
+  const url = new URL(`${base()}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
+  }
+  const res = await request(url.toString(), {
+    source: 'fantasypros',
+    headers: { [AUTH_HEADER]: config.fantasyProsKey },
+    cache: !noCache,
+    maxAgeMs: noCache ? 0 : 6 * 36e5,
+    retries: noCache ? 0 : 2,
+  });
+  return { url: url.toString(), res };
 }
 
 /**
- * FantasyPros scoring codes. Our league scoring is re-applied downstream, so
- * this only picks which consensus board to start from — matching the league's
- * reception value gets the ordering closest to right before we re-price it.
+ * Which consensus board to start from. The league's own scoring is applied
+ * downstream regardless; matching the reception value just makes the starting
+ * order closest to right.
  */
 export function scoringCodeFor(leagueScoring) {
   const ppr = Number(leagueScoring?.rec ?? 0);
@@ -60,92 +80,129 @@ export function scoringCodeFor(leagueScoring) {
   return 'STD';
 }
 
-async function fetchPath(pathTemplate, { season, scoring }) {
-  const url = buildUrl(pathTemplate, { season, scoring });
-  const res = await request(url, {
-    source: 'fantasypros',
-    headers: { 'x-api-key': config.fantasyProsKey },
-    cache: true,
-    maxAgeMs: 6 * 36e5,
-    retries: 2,
+// ---------------------------------------------------------------------------
+// Rankings
+// ---------------------------------------------------------------------------
+
+/**
+ * Consensus rankings. Spec: GET /{sport}/{season}/consensus-rankings
+ * `position` is REQUIRED; ALL is a valid NFLPositions value.
+ */
+export async function fetchRankings({ season, scoring = 'HALF', type = 'DRAFT' } = {}) {
+  const { res, url } = await get(`/nfl/${season}/consensus-rankings`, {
+    position: 'ALL',
+    type: String(type).toUpperCase(),
+    scoring: String(scoring).toUpperCase(),
+    week: 0,
   });
-  return { url, res };
+  if (!res.ok) {
+    throw new Error(
+      `FantasyPros rankings failed: HTTP ${res.status}${res.error ? ` — ${res.error}` : ''}\n` +
+      `  ${redact(url)}\n` +
+      (res.status === 403
+        ? '  A 403 here usually means an invalid parameter value rather than a bad key — ' +
+          'the ranking type and scoring values are case-sensitive and uppercase.'
+        : '')
+    );
+  }
+  const players = extractPlayers(res.json);
+  log.info(`rankings: ${players.length} players (${scoring}/${type}, season ${season})`);
+  return players;
 }
 
+// ---------------------------------------------------------------------------
+// Projections
+// ---------------------------------------------------------------------------
+
 /**
- * Diagnostic. Tries each candidate path and reports what the API actually
- * returned, so the real shape can be adapted to instead of guessed at.
+ * FantasyPros projection field -> our canonical stat key.
+ * Their names differ from ours in small ways (`pass_yds` vs `pass_yd`,
+ * `rec_rec` vs `rec`), and mapping them explicitly is what lets the league's
+ * own scoring table price them without any special cases downstream.
  */
-export async function probe({ season, scoring = 'HALF' } = {}) {
-  if (!isConfigured()) {
-    throw new Error('FANTASYPROS_API_KEY is not set in .env. Request a key at https://api.fantasypros.com');
-  }
-  const attempts = [];
-  for (const template of CANDIDATE_PATHS) {
-    const { url, res } = await fetchPath(template, { season, scoring });
-    const players = res.ok ? extractPlayers(res.json) : [];
-    attempts.push({
-      template,
-      url: url.replace(config.fantasyProsKey ?? '', '***'),
-      status: res.status,
-      ok: res.ok,
-      error: res.error ?? null,
-      playersFound: players.length,
-      sample: players.slice(0, 3).map((p) => ({ name: p.name, pos: p.pos, team: p.team, rank: p.rank })),
-      topLevelKeys: res.json && typeof res.json === 'object' ? Object.keys(res.json).slice(0, 12) : null,
-    });
-    if (players.length) break; // found a working shape; no need to keep probing
-  }
-  return attempts;
-}
+const STAT_MAP = {
+  pass_att: 'pass_att',
+  pass_cmp: 'pass_cmp',
+  pass_yds: 'pass_yd',
+  pass_tds: 'pass_td',
+  pass_ints: 'pass_int',
+  rush_att: 'rush_att',
+  rush_yds: 'rush_yd',
+  rush_tds: 'rush_td',
+  rec_rec: 'rec',
+  rec_yds: 'rec_yd',
+  rec_tds: 'rec_td',
+  ret_tds: 'ret_td',
+  '2pt_tds': 'two_pt',
+  fumbles: 'fum_lost',
+  fg: 'fg_made',
+  xpt: 'pat_made',
+  def_sack: 'def_sack',
+  def_int: 'def_int',
+  def_td: 'def_td',
+  def_pa_a: 'def_pts_allowed',
+};
 
 /**
- * Pull a ranked player list.
- * @returns {Promise<Array<{name,pos,team,rank,adp}>>} ordered best-first
+ * Season projections. Spec: GET /nfl/{season}/projections, `position` required.
+ * Omitting `week` yields season totals rather than a single week.
  */
-export async function fetchRankings({ season, scoring = 'HALF' } = {}) {
-  if (!isConfigured()) {
-    throw new Error('FANTASYPROS_API_KEY is not set in .env. Request a key at https://api.fantasypros.com');
+export async function fetchProjections({ season, position = 'ALL', week = null } = {}) {
+  const { res, url } = await get(`/nfl/${season}/projections`, { position, week });
+  if (!res.ok) {
+    throw new Error(
+      `FantasyPros projections failed: HTTP ${res.status}${res.error ? ` — ${res.error}` : ''}\n  ${redact(url)}`
+    );
   }
-  const templates = config.fantasyProsPath
-    ? [config.fantasyProsPath, ...CANDIDATE_PATHS]
-    : CANDIDATE_PATHS;
-
-  const failures = [];
-  for (const template of templates) {
-    const { url, res } = await fetchPath(template, { season, scoring });
-    if (!res.ok) {
-      failures.push(`${template} -> HTTP ${res.status}${res.error ? ` (${res.error})` : ''}`);
-      continue;
-    }
-    const players = extractPlayers(res.json);
-    if (players.length) {
-      log.info(`fetched ${players.length} ranked players (${scoring})`);
-      return players;
-    }
-    failures.push(`${template} -> 200 but no players recognised in the response`);
-  }
-  throw new Error(
-    'FantasyPros returned no usable rankings. Tried:\n  ' + failures.join('\n  ') +
-    '\nRun `oracle real fp-probe` to see the raw response shape, then set ' +
-    'FANTASYPROS_RANKINGS_PATH in .env to the correct path.'
-  );
+  const rows = extractPlayers(res.json);
+  log.info(`projections: ${rows.length} players (season ${season}${week ? `, week ${week}` : ', season totals'})`);
+  return rows;
 }
 
 /**
- * Pull the ranked player list out of whatever envelope the API used.
+ * Convert a projection row into a canonical per-game stat line.
  *
- * Written to survive shape drift: it looks for the first array of objects that
- * carry something name-like, wherever it sits in the payload, rather than
- * assuming one fixed key. A rankings importer that breaks because a provider
- * renamed a wrapper field is a bad trade for a few lines of tolerance.
+ * Two deliberate adjustments:
+ *  - Season totals are divided by the games played, because every engine in
+ *    this platform reasons in per-game terms.
+ *  - First downs are DERIVED, because FantasyPros does not project them and a
+ *    league scoring 0.5 per first down would otherwise lose a large, real
+ *    scoring category. The rates come from the same place the archetype curves
+ *    use them, and the derivation is flagged so it is never mistaken for a
+ *    projected figure.
+ */
+export function toStatLine(row, { gamesPlayed = 17 } = {}) {
+  const per = gamesPlayed > 0 ? gamesPlayed : 17;
+  const out = {};
+  for (const [their, ours] of Object.entries(STAT_MAP)) {
+    const v = Number(row.stats?.[their] ?? row[their]);
+    if (Number.isFinite(v) && v !== 0) out[ours] = v / per;
+  }
+  // Derived, not projected — FantasyPros does not publish first downs.
+  if (out.pass_cmp) out.pass_first_down = out.pass_cmp * 0.55;
+  if (out.rush_att) out.rush_first_down = out.rush_att * 0.24;
+  if (out.rec) out.rec_first_down = out.rec * 0.57;
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Response parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull the player array out of the response.
+ *
+ * The spec documents `players`, but this stays tolerant of wrapper changes: it
+ * picks whichever array yields the most recognisable player records. An earlier
+ * version demanded that nearly every entry parse, which meant one malformed row
+ * could discard an entire valid list and report zero silently.
  */
 export function extractPlayers(payload) {
   if (!payload || typeof payload !== 'object') return [];
 
   const candidates = [];
   const visit = (node, depth = 0) => {
-    if (depth > 4 || !node || typeof node !== 'object') return;
+    if (depth > 5 || !node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
       if (node.length && node.every((x) => x && typeof x === 'object')) candidates.push(node);
       return;
@@ -154,24 +211,14 @@ export function extractPlayers(payload) {
   };
   visit(payload);
 
-  // Pick the array that yields the MOST recognisable players, preferring ones
-  // whose entries carry a position too — that combination is what a rankings
-  // list looks like and other arrays in the payload rarely do.
-  //
-  // An earlier version required nearly every entry in an array to parse, which
-  // meant one malformed row could cause a whole valid rankings list to be
-  // discarded and the import to report zero silently. Choosing the best
-  // candidate degrades far more gracefully than rejecting outright.
   let best = [];
   let bestScore = 0;
   for (const arr of candidates) {
     const mapped = arr.map(normalisePlayer).filter((p) => p.name);
     if (!mapped.length) continue;
-    const withPos = mapped.filter((p) => p.pos).length;
-    const score = mapped.length + withPos;
+    const score = mapped.length + mapped.filter((p) => p.pos).length;
     if (score > bestScore) { bestScore = score; best = mapped; }
   }
-  // Preserve the API's own ordering when it did not supply explicit ranks.
   return best.map((p, i) => ({ ...p, rank: p.rank ?? i + 1 }));
 }
 
@@ -181,15 +228,56 @@ const num = (v) => {
 };
 
 function normalisePlayer(raw) {
-  const name = raw.player_name ?? raw.name ?? raw.player ?? raw.full_name ?? null;
-  const pos = String(raw.player_position_id ?? raw.position ?? raw.pos ?? raw.position_id ?? '')
+  const name = raw.player_name ?? raw.name ?? raw.fantasypros_player_name ?? raw.full_name ?? null;
+  const pos = String(raw.player_position_id ?? raw.position_id ?? raw.position ?? raw.pos ?? '')
     .toUpperCase().replace(/[0-9]/g, '').trim();
   return {
     name: typeof name === 'string' ? name.trim() : null,
     pos: pos === 'DST' || pos === 'D/ST' ? 'DEF' : pos,
-    team: raw.player_team_id ?? raw.team ?? raw.team_id ?? null,
-    rank: num(raw.rank_ecr ?? raw.rank ?? raw.ecr ?? raw.overall_rank),
-    adp: num(raw.adp ?? raw.rank_ave ?? raw.average_rank),
+    team: raw.player_team_id ?? raw.team_id ?? raw.team ?? null,
+    rank: num(raw.rank_ecr ?? raw.rank ?? raw.ecr),
+    adp: num(raw.rank_ave ?? raw.adp ?? raw.average_rank),
     tier: num(raw.tier),
+    games: num(raw.games ?? raw.g),
+    stats: raw.stats ?? raw,
   };
+}
+
+function redact(url) {
+  const key = config.fantasyProsKey;
+  return key ? url.split(key).join('***') : url;
+}
+
+/**
+ * Diagnostic across seasons and ranking types, reporting what each combination
+ * actually returned. Kept because the API answers an invalid enum value with a
+ * 403 that is easy to misread as an authentication problem.
+ */
+export async function probe({ season, scoring = 'HALF' } = {}) {
+  const results = [];
+  for (const yr of [season, season - 1]) {
+    for (const type of ['DRAFT', 'ADP']) {
+      const { url, res } = await get(`/nfl/${yr}/consensus-rankings`, {
+        position: 'ALL', type, scoring: String(scoring).toUpperCase(), week: 0,
+      }, { noCache: true });
+      const players = res.ok ? extractPlayers(res.json) : [];
+      results.push({
+        kind: 'rankings', season: yr, type, status: res.status,
+        playersFound: players.length,
+        sample: players.slice(0, 3).map((p) => `${p.name} (${p.pos}) rank ${p.rank}`),
+        body: typeof res.body === 'string' ? res.body.slice(0, 140) : null,
+        url: redact(url),
+      });
+    }
+    const { url: pUrl, res: pRes } = await get(`/nfl/${yr}/projections`, { position: 'ALL' }, { noCache: true });
+    const proj = pRes.ok ? extractPlayers(pRes.json) : [];
+    results.push({
+      kind: 'projections', season: yr, type: '-', status: pRes.status,
+      playersFound: proj.length,
+      sample: proj.slice(0, 2).map((p) => `${p.name} (${p.pos}) ${JSON.stringify(p.stats).slice(0, 90)}`),
+      body: typeof pRes.body === 'string' ? pRes.body.slice(0, 140) : null,
+      url: redact(pUrl),
+    });
+  }
+  return results;
 }

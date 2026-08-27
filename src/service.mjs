@@ -123,7 +123,7 @@ export function project(league, players, week, { persist = false } = {}) {
 /** Bye-week-aware, matchup-neutral per-game expectation for the rest of the season. */
 function seasonMean(player, league, week) {
   const rows = all(
-    'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week < ? ORDER BY week DESC LIMIT 8',
+    'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week > 0 AND week < ? ORDER BY week DESC LIMIT 8',
     [player.player_id, league.season, week]
   );
   if (!rows.length) {
@@ -147,11 +147,11 @@ function seasonMean(player, league, week) {
 /** Fractional change in recent output vs season baseline — drives rival valuation. */
 function recentDelta(player, league, week) {
   const recent = all(
-    'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week < ? ORDER BY week DESC LIMIT 3',
+    'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week > 0 AND week < ? ORDER BY week DESC LIMIT 3',
     [player.player_id, league.season, week]
   ).map((r) => scoreStatLine(j(r.stats, {}), league.scoring));
   const season = all(
-    'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week < ?',
+    'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week > 0 AND week < ?',
     [player.player_id, league.season, week]
   ).map((r) => scoreStatLine(j(r.stats, {}), league.scoring));
   if (!recent.length || !season.length) return 0;
@@ -237,12 +237,23 @@ export function draftValues(league, players) {
   };
 
   return players.map((p) => {
+    // Week 0 holds a PROJECTED stat line; weeks 1+ hold observed games. The
+    // distinction is load-bearing: a projection is already a full-season
+    // expectation, so shrinking it toward a replacement-level prior the way a
+    // one-game sample must be shrunk is simply wrong. Doing so priced a back
+    // projected for 1350 yards and 11 touchdowns at 10 points a game instead of
+    // roughly 24 — an error large enough to invert a draft board.
+    const projRow = get(
+      'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week = 0',
+      [p.player_id, season]
+    );
     const rows = all(
-      'SELECT week, stats FROM player_stats WHERE player_id = ? AND season = ? ORDER BY week DESC',
+      'SELECT week, stats FROM player_stats WHERE player_id = ? AND season = ? AND week > 0 ORDER BY week DESC',
       [p.player_id, season]
     );
     const prior = expectedPointsAtRank(p.pos, UNRANKED[p.pos] ?? 60, league.scoring);
     const adp = adpOf(p.player_id, season);
+    const projected = projRow ? scoreStatLine(j(projRow.stats, {}), league.scoring) : null;
 
     let value;
     let basis;
@@ -250,12 +261,20 @@ export function draftValues(league, players) {
       const pts = rows.map((r) => scoreStatLine(j(r.stats, {}), league.scoring));
       const w = pts.map((_, i) => Math.exp(-i / 5));
       const observed = pts.reduce((a, x, i) => a + x * w[i], 0) / w.reduce((a, b) => a + b, 0);
-      // When ADP exists, blend it in as a prior rather than discarding it: it
-      // encodes talent and situation that a short sample cannot.
-      const anchor = adp != null ? (observed + adpCurve(p.pos, adp, p.player_id)) / 2 : observed;
-      const blended = rows.length >= 6 ? observed * 0.75 + anchor * 0.25 : anchor;
-      value = shrink(blended, prior, rows.length, shrinkK[p.pos] ?? 4);
-      basis = `${rows.length} game${rows.length === 1 ? '' : 's'}${adp != null ? ' + ADP' : ''}`;
+      // A real projection is a far better prior than either ADP or a positional
+      // archetype, so it takes precedence when one exists.
+      const anchor = projected != null
+        ? projected
+        : (adp != null ? (observed + adpCurve(p.pos, adp, p.player_id)) / 2 : observed);
+      // Shrink observed play toward that prior by sample size, not toward
+      // replacement level.
+      value = shrink(observed, anchor, rows.length, shrinkK[p.pos] ?? 4);
+      basis = `${rows.length} game${rows.length === 1 ? '' : 's'}`
+        + (projected != null ? ' + projection' : adp != null ? ' + ADP' : '');
+    } else if (projected != null) {
+      // No games played: the projection IS the season expectation. Use it as-is.
+      value = projected;
+      basis = 'projected stat line, priced in league scoring';
     } else if (adp != null) {
       value = adpCurve(p.pos, adp, p.player_id);
       const rank = posRankOf.get(p.player_id);

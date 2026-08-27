@@ -17,7 +17,7 @@ import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextOwnPick } from '../src/engine/draft.mjs';
-import { seedRealPlayers, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros } from '../src/realdata.mjs';
+import { seedRealPlayers, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -376,19 +376,33 @@ const COMMANDS = {
       const attempts = await fantasypros.probe({ season, scoring });
       for (const a of attempts) {
         const mark = a.playersFound ? `${c.green}\u2713${c.reset}` : `${c.red}\u2717${c.reset}`;
-        out(`  ${mark} ${a.template}`);
-        out(`     ${c.grey}HTTP ${a.status}${a.error ? ' — ' + a.error : ''} · players recognised: ${a.playersFound}${c.reset}`);
-        if (a.topLevelKeys) out(`     ${c.grey}top-level keys: ${a.topLevelKeys.join(', ')}${c.reset}`);
-        for (const sp of a.sample) out(`     ${c.grey}sample: ${sp.name} ${sp.pos ?? ''} ${sp.team ?? ''} rank ${sp.rank}${c.reset}`);
+        out(`  ${mark} ${a.kind.padEnd(11)} season ${a.season} ${a.type.padEnd(7)} HTTP ${a.status} · ${a.playersFound} players`);
+        for (const sp of a.sample) out(`     ${c.grey}${sp}${c.reset}`);
+        if (!a.playersFound && a.body) out(`     ${c.grey}${a.body}${c.reset}`);
       }
-      const working = attempts.find((a) => a.playersFound);
+      const ok = attempts.filter((a) => a.playersFound);
       out('');
-      if (working) {
-        out(`  ${c.green}Working path found.${c.reset} Import with: ${c.cyan}node bin/oracle.mjs real fp${c.reset}`);
+      if (ok.length) {
+        const r = ok.find((a) => a.kind === 'rankings');
+        const p = ok.find((a) => a.kind === 'projections');
+        out(`  ${c.green}Working:${c.reset}`);
+        if (r) out(`    rankings    season ${r.season} type ${r.type} — ${c.cyan}node bin/oracle.mjs real fp --season ${r.season}${c.reset}`);
+        if (p) out(`    projections season ${p.season} — ${c.cyan}node bin/oracle.mjs real fp-proj --season ${p.season}${c.reset}`);
       } else {
-        out(`  ${c.yellow}No path returned recognisable players.${c.reset}`);
-        out(`  ${c.grey}Paste this output back and the client can be adapted to the real shape.${c.reset}`);
+        out(`  ${c.yellow}Nothing returned players. Paste this output back.${c.reset}`);
       }
+      return;
+    }
+    if (sub === 'fp-proj') {
+      const league = S.getLeague(opts.league);
+      const season = Number(opts.season ?? league?.season ?? config.season);
+      out(`Fetching season projections from FantasyPros (season ${season})...`);
+      const report = await importProjectionsFromFantasyPros({ season });
+      out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} projected players`);
+      if (report.unmatched?.length) {
+        out(`${c.grey}unmatched (${report.unmatched.length}): ${report.unmatched.slice(0, 10).join(', ')}${report.unmatched.length > 10 ? ' …' : ''}${c.reset}`);
+      }
+      out(`${c.grey}${report.attribution ?? ''}${c.reset}`);
       return;
     }
     if (sub === 'fp') {
@@ -396,7 +410,7 @@ const COMMANDS = {
       const season = Number(opts.season ?? league?.season ?? config.season);
       const scoring = opts.scoring ?? (league ? fantasypros.scoringCodeFor(league.scoring) : 'HALF');
       out(`Fetching ${scoring} consensus rankings from FantasyPros (season ${season})...`);
-      const report = await importRankingsFromFantasyPros({ season, scoring });
+      const report = await importRankingsFromFantasyPros({ season, scoring, type: (opts.type ?? 'DRAFT').toUpperCase() });
       out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} ranked players`);
       if (report.unmatched?.length) {
         out(`${c.grey}unmatched (${report.unmatched.length}): ${report.unmatched.slice(0, 12).join(', ')}${report.unmatched.length > 12 ? ' …' : ''}${c.reset}`);
@@ -452,6 +466,7 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real seed${c.reset} [--clean]     seed real NFL players from Sleeper (no Yahoo needed)
   ${c.cyan}real league${c.reset} --file f.json  configure a real league from hand-entered settings
   ${c.cyan}real fp${c.reset}                 import rankings from the FantasyPros API (needs a key)
+  ${c.cyan}real fp-proj${c.reset}            import projected stat lines (better than rankings)
   ${c.cyan}real fp-probe${c.reset}           diagnose the FantasyPros endpoint shape
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)

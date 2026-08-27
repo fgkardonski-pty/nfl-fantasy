@@ -164,3 +164,60 @@ test('without ADP every player at a position collapses to one value', async () =
     'with no rankings every back is priced identically — the board cannot order them');
   assert.match(values[0].basis, /no ADP/, 'and the valuation says so rather than implying precision');
 });
+
+test('a projected stat line is used as a season expectation, not shrunk like one game', async () => {
+  // Regression. Projections are stored at week 0; observed games at week 1+.
+  // Treating a projection as a single observed game shrank it hard toward a
+  // replacement-level prior, pricing a back projected for 1350 rushing yards
+  // and 11 touchdowns at ~10 points a game instead of ~24 — an error easily
+  // large enough to invert the top of a draft board.
+  const { upsertMany, run, all } = await import('../src/db/index.mjs');
+  const S = await import('../src/service.mjs');
+  const { scoreStatLine } = await import('../src/engine/scoring.mjs');
+
+  run("DELETE FROM players WHERE player_id LIKE 'proj%'");
+  run('DELETE FROM player_stats WHERE season = 2032');
+  run('DELETE FROM adp WHERE season = 2032');
+
+  const cols = ['player_id', 'name', 'pos', 'nfl_team', 'bye_week', 'status', 'injury_note',
+    'age', 'years_exp', 'depth_rank', 'yahoo_key', 'sleeper_id', 'headshot', 'updated_at'];
+  upsertMany('players', cols, [{
+    player_id: 'proj1', name: 'Projected Back', pos: 'RB', nfl_team: 'ATL', bye_week: 5,
+    status: '', injury_note: null, age: 23, years_exp: 2, depth_rank: 1,
+    yahoo_key: null, sleeper_id: 'proj1', headshot: null, updated_at: Date.now(),
+  }], ['player_id']);
+
+  // A strong per-game projected line.
+  const statLine = {
+    rush_att: 17, rush_yd: 79, rush_td: 0.65,
+    rec: 3.5, rec_yd: 28, rec_td: 0.18,
+    rush_first_down: 4.1, rec_first_down: 2.0,
+  };
+  upsertMany('player_stats', ['player_id', 'season', 'week', 'opponent', 'stats'],
+    [{ player_id: 'proj1', season: 2032, week: 0, opponent: null, stats: JSON.stringify(statLine) }],
+    ['player_id', 'season', 'week']);
+
+  const { league_key } = setupRealLeague({
+    name: 'Projection Check', season: 2032, numTeams: 12,
+    scoring: { rush_att: 0.2, rush_yd: 0.1, rush_td: 6, rec: 0.5, rec_yd: 0.1, rec_td: 6,
+      rush_first_down: 0.5, rec_first_down: 0.5 },
+    rosterSlots: [{ slot: 'RB', count: 2 }, { slot: 'BN', count: 4 }], myTeamName: 'T',
+  });
+  const league = S.getLeague(league_key);
+  const [valued] = S.draftValues(league, all("SELECT * FROM players WHERE player_id = 'proj1'"));
+
+  const expected = scoreStatLine(statLine, league.scoring);
+  assert.ok(expected > 20, `sanity: this line is worth ${expected.toFixed(1)} in these rules`);
+  assert.ok(Math.abs(valued.mean - expected) < 0.01,
+    `projection used directly (${valued.mean.toFixed(1)}), not shrunk to ${expected.toFixed(1)}`);
+  assert.match(valued.basis, /projected stat line/);
+});
+
+test('week 0 projections never count as observed games played', async () => {
+  const { all } = await import('../src/db/index.mjs');
+  const S = await import('../src/service.mjs');
+  const league = S.getLeague('real.l.2032');
+  const [valued] = S.draftValues(league, all("SELECT * FROM players WHERE player_id = 'proj1'"));
+  assert.equal(valued.games, 0,
+    'a forecast is not a game played — counting it as one would also corrupt every variance estimate');
+});
