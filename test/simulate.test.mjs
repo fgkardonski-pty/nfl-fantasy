@@ -195,3 +195,33 @@ test('season simulation respects an existing record', () => {
   const ahead = simulateSeason({ teams: base(5), ...opts }).find((r) => r.team_key === 't0');
   assert.ok(ahead.playoffOdds > behind.playoffOdds + 0.2, 'a five-win head start matters');
 });
+
+/**
+ * The empty matchup is a NORMAL state, not an error: before a draft nobody has
+ * a roster, and that is exactly when someone opens the war room to look around.
+ * A degenerate return that satisfies only part of the contract crashed the page
+ * outright, so this pins the whole shape rather than just the win probability.
+ */
+test('an empty matchup returns the same shape as a real one', async () => {
+  const { simulateMatchup } = await import('../src/engine/simulate.mjs');
+  const real = simulateMatchup(
+    [{ mean: 12, sd: 4, pos: 'RB', player_id: 'a', nfl_team: 'DET' }],
+    [{ mean: 11, sd: 4, pos: 'WR', player_id: 'b', nfl_team: 'CHI' }],
+    { sims: 200, seed: 3 }
+  );
+  const empty = simulateMatchup([], [], { sims: 200 });
+
+  for (const key of Object.keys(real)) {
+    assert.ok(key in empty, `empty result is missing "${key}", which callers read`);
+  }
+  assert.ok(Array.isArray(empty.myTotals), 'myTotals must be iterable, not undefined');
+  assert.ok(Array.isArray(empty.oppTotals), 'oppTotals must be iterable, not undefined');
+  assert.equal(empty.winProb, 0.5, 'no information means an even matchup');
+  assert.equal(empty.sims, 0, 'and it must be honest that nothing was simulated');
+});
+
+test('a null lineup is treated as an empty one rather than throwing', async () => {
+  const { simulateMatchup } = await import('../src/engine/simulate.mjs');
+  assert.doesNotThrow(() => simulateMatchup(null, null, { sims: 10 }));
+  assert.doesNotThrow(() => simulateMatchup([], null, { sims: 10 }));
+});

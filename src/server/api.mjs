@@ -261,7 +261,18 @@ export function buildApi() {
     // `all` is the entire scored player universe and `tiers` carries a full
     // copy of every player inside every tier — together roughly half a megabyte
     // the client never reads. Send the board and a tier SUMMARY instead.
-    const { all: scoredAll, tiers, ...rest } = result;
+    const { all: scoredAll, tiers, board: fullBoard, ...rest } = result;
+
+    // Position filter. The board is the top N by score across every position,
+    // so late in a draft the position you actually still need can be missing
+    // from it entirely — and the filtering has to happen against the whole
+    // scored universe, not against those top N, or asking for a kicker in
+    // round three returns nothing at all.
+    const posFilter = String(query.pos ?? '').trim().toUpperCase();
+    const boardLimit = Math.min(int(query.limit, 15), 60);
+    const board = posFilter && posFilter !== 'ALL'
+      ? scoredAll.filter((p) => p.pos === posFilter).slice(0, boardLimit)
+      : fullBoard;
 
     // Live-draft search. The board only shows the top N, but opponents
     // routinely take players well outside it — especially in later rounds and
@@ -282,6 +293,8 @@ export function buildApi() {
       : [];
     return {
       ...rest,
+      board,
+      posFilter: posFilter || null,
       pickNumber,
       nextPickNumber: nextPick,
       // Trimmed, not the full projection object — the client only renders name/pos.

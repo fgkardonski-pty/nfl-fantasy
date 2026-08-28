@@ -105,9 +105,21 @@ export function samplePlayers(projections, nSims, rng) {
  */
 export function simulateMatchup(myLineup, oppLineup, { sims = 20000, seed = 1 } = {}) {
   const rng = new Rng(seed);
-  const all = [...myLineup, ...oppLineup];
+  const all = [...(myLineup ?? []), ...(oppLineup ?? [])];
   if (!all.length) {
-    return { winProb: 0.5, myMean: 0, oppMean: 0, margin: 0, sims: 0 };
+    // The degenerate case must satisfy the SAME contract as a real simulation.
+    // This previously returned four fields out of seventeen, and callers that
+    // reasonably assumed the rest threw rather than degrading — the war room
+    // crashed outright before a draft, when nobody has a roster yet, which is
+    // exactly when someone is most likely to be looking at it.
+    const empty = [];
+    return {
+      winProb: 0.5, sims: 0,
+      myMean: 0, mySd: 0, myFloor: 0, myCeiling: 0,
+      oppMean: 0, oppSd: 0, oppFloor: 0, oppCeiling: 0,
+      margin: 0, marginP10: 0, marginP90: 0,
+      myTotals: empty, oppTotals: empty,
+    };
   }
   const samples = samplePlayers(all, sims, rng);
   const nMine = myLineup.length;

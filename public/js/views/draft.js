@@ -17,7 +17,7 @@ import {
  */
 const STORE_KEY = 'oracle.draft.v1';
 
-const BLANK = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [], q: '' };
+const BLANK = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [], q: '', pos: 'ALL' };
 
 function loadState(leagueKey) {
   try {
@@ -39,7 +39,7 @@ function saveState(leagueKey) {
   try {
     localStorage.setItem(`${STORE_KEY}.${leagueKey}`, JSON.stringify({
       slot: state.slot, pick: state.pick, rounds: state.rounds,
-      drafted: state.drafted, mine: state.mine,
+      drafted: state.drafted, mine: state.mine, pos: state.pos,
     }));
   } catch { /* private browsing, or storage disabled — the draft still works */ }
 }
@@ -61,31 +61,62 @@ export async function render(root) {
   state = loadState(storeKey);
   if (state.pick == null) state.pick = state.slot;
 
+  // Held by reference so refresh() can write the live values back into them.
+  // Marking a pick advances the clock, and a control bar built once and never
+  // updated left that field showing the pick you STARTED on — during a draft,
+  // the single number you most need to be able to trust at a glance.
+  const pickInput = h('input', {
+    type: 'number', min: '1', value: String(state.pick),
+    style: { width: '78px' },
+    onchange: (e) => { state.pick = Number(e.target.value); refresh(); },
+  });
+  const resetBtn = h('button.btn.sm', {
+    title: 'Clear every marked pick and start over. Use this between practice runs.',
+    onclick: () => {
+      if (state.drafted.length && !confirm(
+        `Reset the draft? This clears all ${state.drafted.length} marked picks and cannot be undone.`
+      )) return;
+      state.drafted = [];
+      state.mine = [];
+      state.pick = state.slot;
+      state.q = '';
+      // Persist the cleared state BEFORE re-rendering: render() reloads from
+      // storage, so skipping this would restore the picks just discarded.
+      saveState(storeKey);
+      render(root);
+    },
+  }, 'reset draft');
+
   const controls = h('div.row-flex.mb',
     h('label.small.mute', 'Draft slot'),
     h('input', { type: 'number', min: '1', max: String(numTeams), value: String(state.slot),
       style: { width: '68px' },
       onchange: (e) => { state.slot = Number(e.target.value); state.pick = state.slot; state.drafted = []; refresh(); } }),
     h('label.small.mute', 'On the clock'),
-    h('input', { type: 'number', min: '1', value: String(state.pick),
-      style: { width: '78px' },
-      onchange: (e) => { state.pick = Number(e.target.value); refresh(); } }),
+    pickInput,
     h('label.small.mute', 'Rounds'),
     h('input', { type: 'number', min: '1', max: '30', value: String(state.rounds),
       style: { width: '68px' },
       onchange: (e) => { state.rounds = Number(e.target.value); refresh(); } }),
-    h('button.btn.sm', { onclick: () => { state.pick += 1; refresh(); } }, 'advance pick →'),
+    h('button.btn.sm', {
+      title: 'Move the clock on one pick WITHOUT recording who went. Marking a player taken already advances it.',
+      onclick: () => { state.pick += 1; refresh(); },
+    }, 'advance pick →'),
+    h('select', {
+      title: 'Show only this position on the board. The board is the top players across ALL positions, '
+        + 'so the position you still need can drop off it entirely late in a draft.',
+      onchange: (e) => { state.pos = e.target.value; refresh(); },
+    }, ...['ALL', 'QB', 'RB', 'WR', 'TE', 'K', 'DEF'].map((p) =>
+      h('option', { value: p, selected: state.pos === p ? '' : null }, p === 'ALL' ? 'all positions' : p))),
     h('input', {
       type: 'text',
-      placeholder: 'find any player to mark taken…',
+      placeholder: 'find any player…',
       value: state.q,
       title: 'Searches the ENTIRE pool, not just the board — use this when a rival takes someone outside the top 20',
-      style: { minWidth: '260px' },
+      style: { minWidth: '220px' },
       oninput: (e) => { state.q = e.target.value; debounceSearch(refresh); },
     }),
-    state.drafted.length
-      ? h('button.btn.sm', { onclick: () => { state.drafted = []; state.mine = []; refresh(); } }, `clear ${state.drafted.length} marked`)
-      : null
+    resetBtn
   );
 
   const body = h('div', loading('simulating the draft forward…'));
@@ -105,6 +136,11 @@ export async function render(root) {
     // Every control and every mark routes through here, so this is the one
     // place a save has to happen for none to be missed.
     saveState(storeKey);
+    // Write state back into the controls that state can change on its own.
+    pickInput.value = String(state.pick);
+    resetBtn.textContent = state.drafted.length
+      ? `reset draft (${state.drafted.length} marked)`
+      : 'reset draft';
     body.replaceChildren(loading('simulating the draft forward…'));
     try {
       const params = new URLSearchParams({
@@ -114,6 +150,7 @@ export async function render(root) {
       if (state.drafted.length) params.set('drafted', state.drafted.join(','));
       if (state.mine.length) params.set('mine', state.mine.join(','));
       if (state.q.trim().length >= 2) params.set('q', state.q.trim());
+      if (state.pos && state.pos !== 'ALL') params.set('pos', state.pos);
       const d = await api(`/api/draft/board?${params}`);
       body.replaceChildren(board(d, numTeams, refresh));
     } catch (err) { body.replaceChildren(errorBox(err)); }
@@ -135,7 +172,7 @@ function board(d, numTeams, refresh) {
         'Fix: paste a rankings list into rankings.txt, then run ',
         h('code', 'node bin/oracle.mjs real adp --file rankings.txt'))
     ) : null,
-    rosterStrip(d.myRoster),
+    rosterPanel(d.myRoster, d.need),
     top ? h('div.card.accent.mb',
       h('div.spread',
         h('div',
@@ -240,43 +277,51 @@ function board(d, numTeams, refresh) {
       ))
     ),
 
-    h('div.section-head', h('h3', 'Your roster needs')),
-    h('div.card.tight',
-      h('div.row-flex', ...Object.entries(d.need).filter(([, v]) => v > 0.05).map(([pos, v]) =>
-        badge(`${pos} ${n2(v)}`, v >= 1 ? 'bad' : 'warn')))
-    ),
-
   );
 }
 
 /**
- * What I have taken so far.
+ * My roster and what it still needs, in one panel.
  *
- * Sits at the top of the board because it is checked constantly during a live
- * draft — after every pick, to see what the roster still needs — and anything
- * below the fold may as well not exist under a thirty-second clock. Grouped by
- * position, in the order the roster is built, so a missing starter is obvious
- * at a glance rather than something to count out.
+ * These are the same question asked two ways — what I have, and what that
+ * leaves missing — and they were on opposite ends of a long page, so answering
+ * "what should I be looking for now" meant scrolling between them. Under a
+ * thirty-second clock that is the difference between using the tool and
+ * ignoring it. Kept at the top for the same reason.
  */
-function rosterStrip(myRoster) {
-  if (!myRoster?.length) return null;
+function rosterPanel(myRoster, need) {
   const order = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
   const byPos = new Map(order.map((p) => [p, []]));
-  for (const p of myRoster) {
+  for (const p of myRoster ?? []) {
     if (!byPos.has(p.pos)) byPos.set(p.pos, []);
     byPos.get(p.pos).push(p);
   }
+  const open = Object.entries(need ?? {}).filter(([, v]) => v > 0.05);
+  const count = myRoster?.length ?? 0;
+
   return frag(
-    h('div.section-head', h('h3', `Your roster so far (${myRoster.length})`)),
+    h('div.section-head',
+      h('h3', `Your roster (${count})`),
+      h('span.note', open.length
+        ? 'red means a starting slot is still empty'
+        : 'every starting slot is filled')),
     h('div.card.tight.mb',
-      h('div.row-flex',
-        ...[...byPos.entries()]
-          .filter(([, list]) => list.length)
-          .map(([pos, list]) => h('div.row-flex', { style: { marginRight: '14px' } },
-            posEl(pos),
-            ...list.map((p) => badge(p.name, 'ok'))
-          ))
-      )
+      count
+        ? h('div.row-flex', { style: { flexWrap: 'wrap', rowGap: '6px' } },
+          ...[...byPos.entries()]
+            .filter(([, list]) => list.length)
+            .map(([pos, list]) => h('div.row-flex', { style: { marginRight: '16px' } },
+              posEl(pos),
+              ...list.map((p) => badge(p.name, 'ok'))
+            )))
+        : h('div.small.mute', 'Nothing marked yet. Use "I took" on the board when you make a pick.'),
+      open.length
+        ? h('div.mt-s',
+          h('div.xs.mute', 'STILL NEEDED'),
+          h('div.row-flex', { style: { marginTop: '4px', flexWrap: 'wrap', rowGap: '6px' } },
+            ...open.map(([pos, v]) => badge(`${pos} ${n2(v)}`, v >= 1 ? 'bad' : 'warn'))))
+        : null
     )
   );
 }
+

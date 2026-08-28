@@ -511,7 +511,13 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
 const brief = (p) => (p ? { player_id: p.player_id, name: p.name, pos: p.pos } : null);
 
 function histogram(mine, opp, bins = 28) {
-  const allv = [...mine, ...opp];
+  const allv = [...(mine ?? []), ...(opp ?? [])];
+  // Nothing simulated yet (no roster, no opponent) is a normal state before a
+  // draft, not an error. Return an empty shape the chart can render as blank.
+  if (!allv.length) {
+    const zero = new Array(bins).fill(0);
+    return { lo: 0, hi: 0, width: 1, mine: zero, opp: zero };
+  }
   const lo = Math.min(...allv);
   const hi = Math.max(...allv);
   const w = (hi - lo) / bins || 1;
