@@ -17,11 +17,13 @@ export function createServer() {
     const started = Date.now();
     res.on('finish', () => {
       const ms = Date.now() - started;
-      // Visible by default, and at a threshold a person would actually notice.
-      // During a live draft the gap between marking a pick and seeing the next
-      // recommendation is the only latency that costs anything, and "it feels
-      // slow" is not something anyone can act on — a number in the console is.
-      if (ms > 400) log.warn(`slow: ${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${ms}ms`);
+      // A warning should mean something is wrong, not that the server did its
+      // job. Drawing a full draft board costs a few hundred milliseconds of
+      // real work — simulating the draft forward hundreds of times — and
+      // warning about that trained the eye to ignore the log, which is worse
+      // than not logging at all. This threshold is set where the delay would
+      // actually be felt against a thirty-second pick clock.
+      if (ms > 1500) log.warn(`slow: ${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${ms}ms`);
       else log.debug(`${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${ms}ms`);
     });
 
