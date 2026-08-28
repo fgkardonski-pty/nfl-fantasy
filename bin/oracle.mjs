@@ -12,7 +12,7 @@ import * as S from '../src/service.mjs';
 import { generateDemoLeague } from '../src/demo.mjs';
 import { startServer } from '../src/server/index.mjs';
 import { daemon } from '../src/research/daemon.mjs';
-import { JOBS } from '../src/research/jobs.mjs';
+import { JOBS, addNews } from '../src/research/jobs.mjs';
 import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
@@ -362,6 +362,80 @@ const COMMANDS = {
     out(`${c.red}Unknown yahoo action "${action}". Try: status | doctor | connect | code | leagues | sync${c.reset}`);
   },
 
+  /**
+   * News in, projection impact out.
+   *
+   * This is the one place the Claude API key does anything. The model is asked
+   * to do the single thing it beats a regression at — read a sentence of
+   * English and say whether a player's role just grew or shrank — and never to
+   * project points or pick lineups. Everything it returns is stored with its
+   * rationale so it can be overruled.
+   */
+  async news(opts, sub, positional = []) {
+    const action = sub ?? 'list';
+
+    if (action === 'add') {
+      const headline = positional?.[1] ?? opts.headline;
+      if (!headline) {
+        out(`${c.red}Usage:${c.reset} node bin/oracle.mjs news add "<headline>" --player "<name>" [--body "..."]`);
+        process.exit(1);
+      }
+      let playerId = null;
+      if (opts.player) {
+        const norm = (n) => String(n).toLowerCase().replace(/[^a-z]/g, '');
+        const hits = all('SELECT player_id, name, pos, nfl_team FROM players')
+          .filter((p) => norm(p.name) === norm(opts.player));
+        if (!hits.length) {
+          out(`${c.red}No player matches "${opts.player}".${c.reset} News needs a player to attach an impact to.`);
+          process.exit(1);
+        }
+        if (hits.length > 1) {
+          out(`${c.yellow}"${opts.player}" matches ${hits.length} players:${c.reset}`);
+          for (const h of hits) out(`  ${h.player_id}  ${h.name} (${h.pos}, ${h.nfl_team ?? 'FA'})`);
+          out(`${c.grey}Re-run with --player-id to pick one.${c.reset}`);
+          process.exit(1);
+        }
+        playerId = hits[0].player_id;
+        out(`${c.grey}attached to ${hits[0].name} (${hits[0].pos}, ${hits[0].nfl_team ?? 'FA'})${c.reset}`);
+      } else if (opts['player-id']) {
+        playerId = opts['player-id'];
+      }
+      const id = addNews({ playerId, headline, body: opts.body, source: opts.source ?? 'manual', url: opts.url });
+      out(`${c.green}\u2713${c.reset} news added (${id})`);
+      out(`${c.grey}Score it with:${c.reset} ${c.cyan}node bin/oracle.mjs research news:score${c.reset}`);
+      if (!config.anthropicKey) {
+        out(`${c.yellow}! ANTHROPIC_API_KEY is not set — scoring will be skipped and the impact stays neutral.${c.reset}`);
+      }
+      return;
+    }
+
+    if (action === 'list') {
+      const rows = all(
+        `SELECT n.ts, n.headline, n.impact, n.confidence, n.rationale, p.name, p.pos
+           FROM news n LEFT JOIN players p ON p.player_id = n.player_id
+          ORDER BY n.ts DESC LIMIT ?`, [Number(opts.limit ?? 20)]
+      );
+      rule('NEWS');
+      if (!rows.length) {
+        out(`  ${c.grey}Nothing yet. Add some:${c.reset}`);
+        out(`  ${c.cyan}node bin/oracle.mjs news add "Coach says X will start" --player "Player Name"${c.reset}`);
+        return;
+      }
+      for (const r of rows) {
+        const scored = r.impact != null;
+        const tone = !scored ? c.grey : r.impact > 0.05 ? c.green : r.impact < -0.05 ? c.red : c.grey;
+        out(`  ${tone}${scored ? (r.impact > 0 ? '+' : '') + Number(r.impact).toFixed(2) : ' ---- '}${c.reset}`
+          + `  ${pad(r.name ?? '(no player)', 22)}${r.headline.slice(0, 60)}`);
+        if (r.rationale) out(`          ${c.grey}${r.rationale} (confidence ${Number(r.confidence ?? 0).toFixed(2)})${c.reset}`);
+      }
+      const unscored = rows.filter((r) => r.impact == null).length;
+      if (unscored) out(`\n  ${c.grey}${unscored} unscored. Run:${c.reset} ${c.cyan}node bin/oracle.mjs research news:score${c.reset}`);
+      return;
+    }
+
+    out(`${c.red}Unknown news action "${action}". Try: add | list${c.reset}`);
+  },
+
   async research(opts, sub, positional = []) {
     if (sub === 'daemon') {
       daemon.start();
@@ -591,6 +665,8 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real fp-page${c.reset}            find the undocumented paging parameter
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)
+  ${c.cyan}news add${c.reset} "<headline>"   record news, then score it with the Claude API
+  ${c.cyan}news list${c.reset}               recent news with its scored projection impact
   ${c.cyan}research daemon${c.reset}         run the scheduler in the foreground
 
 ${c.bold}OPTIONS${c.reset}
