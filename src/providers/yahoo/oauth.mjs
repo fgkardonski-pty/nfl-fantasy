@@ -79,7 +79,10 @@ export function authorizeUrl({ access = 'read' } = {}) {
     client_id: config.yahoo.clientId,
     redirect_uri: config.yahoo.redirectUri,
     response_type: 'code',
-    scope: access === 'write' ? 'fspt-w' : 'fspt-r',
+    // Spec values for the Fantasy Sports API. Overridable because the scope a
+    // Yahoo approval actually grants is not something this code can verify, and
+    // a scope change should not require editing source.
+    scope: config.yahoo.scope || (access === 'write' ? 'fspt-w' : 'fspt-r'),
     state,
     code_challenge: challenge,
     code_challenge_method: method,
@@ -97,14 +100,56 @@ export function authorizeUrl({ access = 'read' } = {}) {
  */
 export function parseCallbackInput(input) {
   const text = String(input ?? '').trim();
-  if (!text) return { code: null, state: null };
-  if (text.includes('?') || text.includes('code=')) {
+  if (!text) return { code: null, state: null, error: null, errorDescription: null };
+  if (text.includes('?') || text.includes('code=') || text.includes('error=')) {
     try {
       const url = new URL(text.startsWith('http') ? text : `http://x/?${text.replace(/^\?/, '')}`);
-      return { code: url.searchParams.get('code'), state: url.searchParams.get('state') };
+      return {
+        code: url.searchParams.get('code'),
+        state: url.searchParams.get('state'),
+        // Yahoo reports a REFUSAL in the same redirect, as an error parameter
+        // rather than a code. Without reading it, a refusal was indistinguishable
+        // from a typo — the operator was told no code was found, which is true
+        // and useless, when the URL plainly said why.
+        error: url.searchParams.get('error'),
+        errorDescription: url.searchParams.get('error_description'),
+      };
     } catch { /* fall through to treating it as a bare code */ }
   }
-  return { code: text, state: null };
+  return { code: text, state: null, error: null, errorDescription: null };
+}
+
+/**
+ * Turn a Yahoo OAuth error code into something worth acting on.
+ *
+ * These arrive as bare slugs in a redirect URL, and each one has exactly one
+ * likely cause and one fix. Saying so beats making someone search for it while
+ * the flow is half finished.
+ */
+export function explainOAuthError(error, description = null) {
+  const known = {
+    invalid_scope:
+      'Your Yahoo application is not approved for the Fantasy Sports API yet.\n'
+      + '  This is the access request that takes Yahoo one to two weeks to review — it is not a\n'
+      + '  problem with this software, your credentials, or the redirect URI. Nothing you change\n'
+      + '  locally will get past it. When the approval email arrives, run the connect step again\n'
+      + '  and it will work unchanged.',
+    invalid_client:
+      'Yahoo does not recognise the client ID and secret.\n'
+      + '  Check YAHOO_CLIENT_ID and YAHOO_CLIENT_SECRET in .env against the app at\n'
+      + '  https://developer.yahoo.com/apps/ — a trailing space or a truncated paste does this.',
+    redirect_uri_mismatch:
+      'The redirect URI does not match the one registered on the Yahoo app.\n'
+      + '  It must match EXACTLY, including https:// and any trailing slash.',
+    access_denied:
+      'The authorisation was declined on the Yahoo consent screen. Run the connect step again\n'
+      + '  and choose to allow access.',
+    invalid_grant:
+      'That authorisation code was already used or has expired. Codes are single-use and\n'
+      + '  short-lived — start the connection again for a fresh one.',
+  };
+  const detail = description ? `\n  Yahoo said: ${description}` : '';
+  return (known[error] ?? `Yahoo refused the authorisation with "${error}".`) + detail;
 }
 
 /**

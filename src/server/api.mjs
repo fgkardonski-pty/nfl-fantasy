@@ -379,7 +379,12 @@ export function buildApi() {
   });
 
   r.get('/auth/yahoo/callback', async ({ res, query }) => {
-    if (query.error) { html(res, 400, page('Yahoo declined', `Yahoo returned: <code>${escapeHtml(query.error_description ?? query.error)}</code>`)); return; }
+    if (query.error) {
+      html(res, 400, page('Yahoo declined',
+        `<p><code>${escapeHtml(query.error)}</code></p>`
+        + `<pre style="white-space:pre-wrap">${escapeHtml(oauth.explainOAuthError(query.error, query.error_description))}</pre>`));
+      return;
+    }
     if (!query.code) { html(res, 400, page('Missing code', 'Yahoo did not return an authorisation code.')); return; }
     try {
       await oauth.exchangeCode(query.code, query.state);

@@ -278,8 +278,17 @@ const COMMANDS = {
         out(`${c.red}Paste the redirect URL or the code:${c.reset} node bin/oracle.mjs yahoo code "<url or code>"`);
         process.exit(1);
       }
-      const { code, state } = oauth.parseCallbackInput(pasted);
-      if (!code) { out(`${c.red}No authorisation code found in that input.${c.reset}`); process.exit(1); }
+      const { code, state, error, errorDescription } = oauth.parseCallbackInput(pasted);
+      if (error) {
+        out(`${c.red}Yahoo refused the authorisation.${c.reset}\n`);
+        out(`  ${oauth.explainOAuthError(error, errorDescription)}`);
+        process.exit(1);
+      }
+      if (!code) {
+        out(`${c.red}No authorisation code found in that input.${c.reset}`);
+        out(`${c.grey}Paste the ENTIRE address from the browser bar, including everything after the "?".${c.reset}`);
+        process.exit(1);
+      }
       await oauth.exchangeCode(code, state);
       out(`${c.green}✓ Yahoo connected.${c.reset}`);
       const leagues = await yahooClient.myLeagues();
@@ -308,7 +317,49 @@ const COMMANDS = {
       out(report.ok ? `${c.green}✓ sync complete${c.reset} (${report.ms}ms)` : `${c.yellow}⚠ partial sync${c.reset} — ${report.errors.length} stage(s) failed`);
       return;
     }
-    out(`${c.red}Unknown yahoo action "${action}". Try: status | connect | code | leagues | sync${c.reset}`);
+    if (action === 'doctor') {
+      rule('YAHOO PRE-FLIGHT');
+      const s2 = oauth.connectionStatus();
+      const checks = [];
+      const add = (label, ok, detail) => { checks.push({ label, ok, detail }); };
+
+      add('ORACLE_SECRET set', Boolean(config.secret),
+        'Tokens are encrypted at rest and refuse to be stored without it. Set ORACLE_SECRET in .env.');
+      add('YAHOO_CLIENT_ID set', Boolean(config.yahoo.clientId), 'Copy it from https://developer.yahoo.com/apps/');
+      add('YAHOO_CLIENT_SECRET set', Boolean(config.yahoo.clientSecret), 'Copy it from the same page.');
+      add('Redirect URI is https', /^https:\/\//i.test(s2.redirectUri || ''),
+        `Yahoo rejects plain http. Currently: ${s2.redirectUri}. Set YAHOO_REDIRECT_URI in .env to the `
+        + 'exact https URL registered on the Yahoo app — the browser does not need to reach it, '
+        + 'because the code can be pasted back with "yahoo code".');
+      add('Tokens stored', s2.connected, 'Not connected yet — run: node bin/oracle.mjs yahoo connect');
+
+      for (const ch of checks) {
+        out(`  ${ch.ok ? c.green + '\u2713' : c.yellow + '\u2717'}${c.reset} ${ch.label}`);
+        if (!ch.ok) out(`      ${c.grey}${ch.detail}${c.reset}`);
+      }
+
+      if (!s2.connected) {
+        out(`\n  ${c.grey}Local setup is what these checks cover. They cannot tell you whether Yahoo has${c.reset}`);
+        out(`  ${c.grey}approved your app for the Fantasy Sports API — only trying the connection can, and${c.reset}`);
+        out(`  ${c.grey}an unapproved app fails with "invalid_scope" no matter how the rest is configured.${c.reset}`);
+        return;
+      }
+
+      // Connected: prove it against the live API rather than trusting the token.
+      out(`\n  ${c.grey}calling the live API…${c.reset}`);
+      try {
+        const leagues = await yahooClient.myLeagues();
+        out(`  ${c.green}\u2713${c.reset} API call succeeded — ${leagues.length} NFL league(s) visible`);
+        for (const l of leagues) out(`      ${c.cyan}${l.league_key}${c.reset}  ${l.name} · ${l.num_teams} teams`);
+        out(`\n  ${c.green}Yahoo is fully working.${c.reset} Next: ${c.cyan}node bin/oracle.mjs yahoo sync --league <key>${c.reset}`);
+      } catch (err) {
+        out(`  ${c.red}\u2717${c.reset} the API rejected the request: ${err.message}`);
+        out(`      ${c.grey}A stored token that cannot call the API usually means the approval covers a${c.reset}`);
+        out(`      ${c.grey}different scope than the one requested. Try: YAHOO_SCOPE=fspt-r in .env, reconnect.${c.reset}`);
+      }
+      return;
+    }
+    out(`${c.red}Unknown yahoo action "${action}". Try: status | doctor | connect | code | leagues | sync${c.reset}`);
   },
 
   async research(opts, sub, positional = []) {
@@ -526,6 +577,7 @@ ${c.bold}DRAFT DAY${c.reset}
 
 ${c.bold}DATA${c.reset}
   ${c.cyan}yahoo status${c.reset}            connection state and setup instructions
+  ${c.cyan}yahoo doctor${c.reset}            check every prerequisite, then prove it against the live API
   ${c.cyan}yahoo connect${c.reset}           print the authorisation URL to open in your browser
   ${c.cyan}yahoo code${c.reset} "<url>"      finish the connection by pasting the redirect URL
   ${c.cyan}yahoo leagues${c.reset}           list your Yahoo NFL leagues

@@ -168,26 +168,65 @@ test('Yahoo position fields resolve to a single position plus an eligibility lis
 
 test('parseCallbackInput accepts every form an operator might paste', async () => {
   const { parseCallbackInput } = await import('../src/providers/yahoo/oauth.mjs');
+  const got = (input) => {
+    const r = parseCallbackInput(input);
+    return { code: r.code, state: r.state };
+  };
 
   assert.deepEqual(
-    parseCallbackInput('http://localhost:4317/auth/yahoo/callback?code=abc123&state=xyz789'),
+    got('http://localhost:4317/auth/yahoo/callback?code=abc123&state=xyz789'),
     { code: 'abc123', state: 'xyz789' }, 'a full redirect URL');
 
   assert.deepEqual(
-    parseCallbackInput('https://example.com/cb?state=xyz789&code=abc123'),
+    got('https://example.com/cb?state=xyz789&code=abc123'),
     { code: 'abc123', state: 'xyz789' }, 'parameter order does not matter');
 
-  assert.deepEqual(
-    parseCallbackInput('?code=abc123&state=xyz789'),
+  assert.deepEqual(got('?code=abc123&state=xyz789'),
     { code: 'abc123', state: 'xyz789' }, 'a bare query string');
 
-  assert.deepEqual(
-    parseCallbackInput('  abc123  '),
+  assert.deepEqual(got('  abc123  '),
     { code: 'abc123', state: null }, 'a bare code, whitespace trimmed');
 
-  assert.deepEqual(parseCallbackInput(''), { code: null, state: null });
-  assert.deepEqual(parseCallbackInput(null), { code: null, state: null });
-  assert.deepEqual(parseCallbackInput(undefined), { code: null, state: null });
+  assert.deepEqual(got(''), { code: null, state: null });
+  assert.deepEqual(got(null), { code: null, state: null });
+  assert.deepEqual(got(undefined), { code: null, state: null });
+});
+
+/**
+ * A REFUSAL arrives in the same redirect as a success would, as an error
+ * parameter instead of a code. Reading only the code made a refusal look
+ * identical to a typo: the operator was told no code was found, which is true
+ * and useless, when the URL in front of them said exactly what went wrong.
+ */
+test('a refusal in the redirect is read, not mistaken for a missing code', async () => {
+  const { parseCallbackInput } = await import('../src/providers/yahoo/oauth.mjs');
+  const r = parseCallbackInput(
+    'https://example.com/cb?error=invalid_scope&error_description=Invalid%20scope&state=xyz');
+  assert.equal(r.code, null);
+  assert.equal(r.error, 'invalid_scope');
+  assert.equal(r.errorDescription, 'Invalid scope');
+  assert.equal(r.state, 'xyz');
+});
+
+test('a Yahoo error slug is explained in terms of what to do about it', async () => {
+  const { explainOAuthError } = await import('../src/providers/yahoo/oauth.mjs');
+
+  // The one that actually blocked setup. It must say plainly that no local
+  // change fixes it, or the next hour goes into re-checking credentials.
+  const scope = explainOAuthError('invalid_scope');
+  assert.match(scope, /not approved/i);
+  assert.match(scope, /one to two weeks|1 to 2 weeks/i);
+  assert.match(scope, /not a\s*\n?\s*problem with this software|nothing you change/i);
+
+  assert.match(explainOAuthError('invalid_client'), /CLIENT_ID|client id/i);
+  assert.match(explainOAuthError('redirect_uri_mismatch'), /redirect/i);
+  assert.match(explainOAuthError('access_denied'), /declined/i);
+  assert.match(explainOAuthError('invalid_grant'), /expired|single-use/i);
+
+  // An unknown slug still names itself rather than vanishing.
+  assert.match(explainOAuthError('something_new'), /something_new/);
+  // And any description Yahoo supplied is carried through verbatim.
+  assert.match(explainOAuthError('invalid_scope', 'scope not permitted'), /scope not permitted/);
 });
 
 test('exchangeCode refuses an unknown state rather than guessing', async () => {

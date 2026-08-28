@@ -45,6 +45,8 @@ export const config = {
     authUrl: 'https://api.login.yahoo.com/oauth2/request_auth',
     tokenUrl: 'https://api.login.yahoo.com/oauth2/get_token',
     apiBase: 'https://fantasysports.yahooapis.com/fantasy/v2',
+    // Overrides the fspt-r / fspt-w default when set.
+    scope: env('YAHOO_SCOPE'),
     get configured() { return Boolean(this.clientId && this.clientSecret); },
   },
 
