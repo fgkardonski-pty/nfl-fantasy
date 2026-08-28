@@ -16,7 +16,7 @@ import * as yahoo from '../providers/yahoo/client.mjs';
 import * as sync from '../providers/yahoo/sync.mjs';
 import { JOBS, addNews } from '../research/jobs.mjs';
 import { daemon } from '../research/daemon.mjs';
-import { recommendPick, snakePicks, nextOwnPick } from '../engine/draft.mjs';
+import { recommendPick, snakePicks, nextContestedPick } from '../engine/draft.mjs';
 import { computeVor, tierize, tierSummary } from '../engine/vor.mjs';
 import { evaluateOffer } from '../engine/trades.mjs';
 import { optimalLineup, lineupMarginals } from '../engine/optimizer.mjs';
@@ -212,7 +212,10 @@ export function buildApi() {
     const slot = Math.max(1, Math.min(numTeams, int(query.slot, 1)));
     const rounds = int(query.rounds, league.allSlots.length || 16);
     const pickNumber = int(query.pick, snakePicks(slot, numTeams, rounds)[0]);
-    const nextPick = nextOwnPick(pickNumber, slot, numTeams, rounds);
+    // The horizon is the next pick opponents choose BEFORE, not simply my next
+    // pick: at the turn of a snake those are consecutive, and treating them as
+    // two separate decisions leaves the board with no scarcity signal at all.
+    const nextPick = nextContestedPick(pickNumber, slot, numTeams, rounds);
 
     // Everyone already drafted in this league's stored draft is off the board;
     // in a live draft the client posts the picks as they happen via `drafted`

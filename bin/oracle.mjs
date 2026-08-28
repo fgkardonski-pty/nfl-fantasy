@@ -16,7 +16,7 @@ import { JOBS, addNews } from '../src/research/jobs.mjs';
 import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
-import { recommendPick, snakePicks, nextOwnPick } from '../src/engine/draft.mjs';
+import { recommendPick, snakePicks, nextContestedPick } from '../src/engine/draft.mjs';
 import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
@@ -215,7 +215,7 @@ const COMMANDS = {
     const rounds = Number(opts.rounds ?? 16);
     const picks = snakePicks(slot, numTeams, rounds);
     const pickNumber = Number(opts.pick ?? picks[0]);
-    const next = nextOwnPick(pickNumber, slot, numTeams, rounds);
+    const next = nextContestedPick(pickNumber, slot, numTeams, rounds);
 
     const pool = all('SELECT * FROM players');
     const projected = S.draftValues(l, pool);

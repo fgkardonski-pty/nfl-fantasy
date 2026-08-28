@@ -460,3 +460,66 @@ test('waiting is preferred when the value will still be there', async () => {
   assert.ok(rec.vona.QB.vona < rec.vona.RB.vona,
     'waiting must cost less at the position the market has not bid up');
 });
+
+// ---------------------------------------------------------------------------
+// The turn: back-to-back picks are one decision
+// ---------------------------------------------------------------------------
+
+/**
+ * At the turn of a snake the first and last seats pick twice in a row. Seat 16
+ * of 16 holds picks 16 and 17 with nobody in between, and that repeats every
+ * round — 48/49, 80/81, and so on.
+ *
+ * Measuring the horizon as "my next pick" spans a single pick during which no
+ * opponent chooses, so nothing can be taken, every player survives with
+ * certainty, and every VONA is zero. The board loses its entire notion of
+ * scarcity — and for a turn seat that is HALF the draft advised blind, which is
+ * exactly the seat where reading the run of picks matters most.
+ */
+test('consecutive own picks are treated as one decision', async () => {
+  const { nextContestedPick, snakePicks } = await import('../src/engine/draft.mjs');
+  assert.deepEqual(snakePicks(16, 16, 4), [16, 17, 48, 49]);
+
+  // Picks 16 and 17 are back to back; the next time opponents choose before me
+  // is pick 48.
+  assert.equal(nextContestedPick(16, 16, 16, 16), 48, 'from the first of the pair');
+  assert.equal(nextContestedPick(17, 16, 16, 16), 48, 'and from the second');
+});
+
+test('a mid-board seat is unaffected, since its picks are never adjacent', async () => {
+  const { nextContestedPick } = await import('../src/engine/draft.mjs');
+  // Seat 3 holds 3, 30, 35 — always with opponents in between.
+  assert.equal(nextContestedPick(3, 3, 16, 16), 30);
+  assert.equal(nextContestedPick(30, 3, 16, 16), 35);
+});
+
+test('seat 1 turns from the second round onward', async () => {
+  const { nextContestedPick } = await import('../src/engine/draft.mjs');
+  // 1, then 32 and 33 back to back, then 64 and 65.
+  assert.equal(nextContestedPick(1, 1, 16, 16), 32, 'the opening pick has a full round ahead of it');
+  assert.equal(nextContestedPick(32, 1, 16, 16), 64, 'but 32 and 33 are one decision');
+  assert.equal(nextContestedPick(33, 1, 16, 16), 64);
+});
+
+test('at the turn, scarcity is measured rather than collapsing to zero', async () => {
+  const { recommendPick, nextContestedPick } = await import('../src/engine/draft.mjs');
+  const available = [];
+  for (let i = 0; i < 60; i++) {
+    available.push({ player_id: `rb${i}`, name: `RB${i}`, pos: 'RB', mean: 26 - i * 0.5, sd: 6, adp: i + 1, games: 5, status: '' });
+    available.push({ player_id: `wr${i}`, name: `WR${i}`, pos: 'WR', mean: 21 - i * 0.28, sd: 5, adp: i + 1, games: 5, status: '' });
+  }
+  const slots = [{ slot: 'QB', count: 1 }, { slot: 'RB', count: 2 }, { slot: 'WR', count: 2 }, { slot: 'BN', count: 6 }];
+  const common = {
+    available, myRoster: [], rosterSlots: slots, numTeams: 16,
+    pickNumber: 16, opponents: [{ bias: {} }], sims: 120, limit: 3,
+  };
+
+  const naive = recommendPick({ ...common, nextPickNumber: 17 });
+  const real = recommendPick({ ...common, nextPickNumber: nextContestedPick(16, 16, 16, 16) });
+
+  assert.equal(naive.vona.RB.vona, 0, 'with no opponent picks in between, nothing can be lost');
+  assert.ok(real.vona.RB.vona > 0.5,
+    `over a real horizon the position does fall off (got ${real.vona.RB.vona.toFixed(2)})`);
+  assert.ok(real.board[0].survivalToNextPick < 0.9,
+    'and the best player is no longer certain to last');
+});

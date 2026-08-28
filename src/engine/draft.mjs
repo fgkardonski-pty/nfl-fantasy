@@ -417,8 +417,24 @@ export function snakePicks(slot, numTeams, rounds) {
   return picks;
 }
 
-/** The next pick after `current` belonging to the same slot. */
-export function nextOwnPick(currentPick, slot, numTeams, rounds) {
+/**
+ * The next pick that OPPONENTS get to choose before.
+ *
+ * At the turn of a snake — the first and last seats — two picks are
+ * consecutive: seat sixteen of sixteen picks at 16 and 17 with nobody in
+ * between. Measuring the horizon as "my next pick" then spans a single pick
+ * during which nothing can be taken from me, so every player survives, every
+ * VONA is zero, and the board loses its entire notion of scarcity. For a turn
+ * seat that happens at EVERY round, so half the draft is advised blind.
+ *
+ * Back-to-back picks are one decision, not two. The horizon that matters is the
+ * next pick I hold after opponents have actually had a say, so a run of
+ * consecutive own picks is walked past first.
+ */
+export function nextContestedPick(currentPick, slot, numTeams, rounds) {
   const picks = snakePicks(slot, numTeams, rounds);
-  return picks.find((p) => p > currentPick) ?? currentPick + numTeams;
+  const mine = new Set(picks);
+  let end = currentPick;
+  while (mine.has(end + 1)) end++;
+  return picks.find((p) => p > end) ?? end + numTeams;
 }
