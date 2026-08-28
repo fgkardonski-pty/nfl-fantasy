@@ -240,7 +240,11 @@ export function recommendPick({
     const risk = riskPenalty(p);
     const byePenalty = byeCollisionPenalty(p, myRoster, benchDepth);
     const survive = survivalProb.get(p.player_id) ?? 0;
-    const score = p.vor + v * 0.85 + needBonus + cliffBonus - risk - byePenalty;
+    // Production, and what waiting costs, are both worth only what this roster
+    // can use. Roster NEED stays outside the discount: it is about the slot,
+    // not the player, and discounting it would double-count the same fact.
+    const fit = rosterFit(p.pos, myRoster, rosterSlots, numTeams);
+    const score = (p.vor + v * 0.85 + cliffBonus) * fit + needBonus - risk - byePenalty;
     return {
       ...p,
       tier: tierOf.get(p.player_id) ?? 1,
@@ -249,9 +253,10 @@ export function recommendPick({
       cliffBonus,
       risk,
       byePenalty,
+      fit,
       survivalToNextPick: survive,
       score,
-      reasons: buildReasons(p, { v, needBonus, cliffBonus, risk, byePenalty, survive, levels, tiers: tierOf.get(p.player_id) }),
+      reasons: buildReasons(p, { v, needBonus, cliffBonus, risk, byePenalty, fit, survive, levels, tiers: tierOf.get(p.player_id) }),
     };
   }).sort((a, b) => b.score - a.score);
 
@@ -265,6 +270,50 @@ export function recommendPick({
     replacementMeta: meta,
     scarcity: scarcity(available, levels),
   };
+}
+
+/**
+ * How much of a player's value THIS roster can actually use.
+ *
+ * VOR answers "how much better is he than a replacement-level starter", and
+ * that is the right question only while he would in fact start. Once the slots
+ * his position can fill are taken, he is a bench player, and a bench player's
+ * contribution is a fraction of what he would produce starting.
+ *
+ * Nothing expressed this before. Roster need ADDED for an empty slot but
+ * nothing SUBTRACTED for a full one, so a second quarterback in a
+ * one-quarterback league kept the whole of a starter's value and could
+ * outrank a running back at a position still completely unfilled. That is
+ * backwards: he would sit on the bench all season.
+ *
+ * How much a bench player is worth depends entirely on the position:
+ *
+ *   RB, WR   Real value. Injuries are constant and flex slots are hungry, so
+ *            depth here starts games most weeks of the season.
+ *   TE       Some. One starting slot, occasionally flex-eligible.
+ *   QB       Little in a one-QB league. The backup plays during a bye or an
+ *            injury, and a streamed free agent covers that nearly as well.
+ *   K, DEF   Almost none. Both are streamed off waivers week to week; a second
+ *            one is a wasted roster spot.
+ *
+ * Demand is taken from the league's own slots, so a superflex or two-QB league
+ * raises the quarterback ceiling on its own rather than needing a special case.
+ */
+const BENCH_VALUE = { RB: 0.65, WR: 0.60, TE: 0.35, QB: 0.25, K: 0.10, DEF: 0.15 };
+
+export function rosterFit(pos, myRoster, rosterSlots, numTeams) {
+  const { perTeam } = positionalDemand(rosterSlots, numTeams);
+  // How many of this position this roster can actually start, counting the
+  // share of the flex slots that realistically goes to it.
+  const startable = perTeam[pos] ?? 1;
+  const have = (myRoster ?? []).filter((p) => p.pos === pos).length;
+
+  // How far past startable this pick would put me. Fractional on purpose:
+  // demand for flex-eligible positions is fractional, so the discount arrives
+  // gradually as a position fills rather than snapping on at a threshold.
+  const surplus = Math.max(0, (have + 1) - startable);
+  if (surplus <= 0) return 1;
+  return (BENCH_VALUE[pos] ?? 0.4) ** surplus;
 }
 
 /**
@@ -303,9 +352,15 @@ function riskPenalty(p) {
   return risk;
 }
 
-function buildReasons(p, { v, needBonus, cliffBonus, risk, byePenalty, survive, levels, tiers }) {
+function buildReasons(p, { v, needBonus, cliffBonus, risk, byePenalty, fit, survive, levels, tiers }) {
   const out = [];
   out.push(`${p.pos}${p.posRank} · ${p.mean.toFixed(1)} proj vs ${(levels[p.pos] ?? 0).toFixed(1)} replacement = ${p.vor >= 0 ? '+' : ''}${p.vor.toFixed(1)} VOR`);
+  if (fit < 0.95) {
+    out.push(
+      `Your ${p.pos} slots are filled — he would be a bench player, so only `
+      + `${Math.round(fit * 100)}% of that value is usable (${(p.vor * fit).toFixed(1)})`
+    );
+  }
   if (v > 1.5) out.push(`Position falls off: only ${v.toFixed(1)} pts of ${p.pos} value survives to your next pick`);
   else if (v < 0.5) out.push(`${p.pos} is deep — you can wait, similar value will be there`);
   if (survive < 0.2) out.push(`Only ${(survive * 100).toFixed(0)}% chance he lasts to your next pick`);

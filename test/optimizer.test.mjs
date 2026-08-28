@@ -293,3 +293,83 @@ test('a player with no recorded bye week is never penalised', async () => {
   assert.equal(byeCollisionPenalty({ bye_week: null, vor: 20 }, roster, 5), 0);
   assert.equal(byeCollisionPenalty({ bye_week: 0, vor: 20 }, roster, 5), 0);
 });
+
+// ---------------------------------------------------------------------------
+// Roster fit: value this roster can actually use
+// ---------------------------------------------------------------------------
+
+/**
+ * VOR measures a player against a replacement-level STARTER, which is the right
+ * question only while he would start. Once his position's slots are filled he
+ * is a bench player, and these pin that the score reflects it.
+ *
+ * The defect this guards against was live: roster need added for an empty slot
+ * but nothing subtracted for a full one, so a second quarterback in a
+ * one-quarterback league carried a starter's whole value and was recommended
+ * first overall over a running back at a completely unfilled position.
+ */
+const ONE_QB = [
+  { slot: 'QB', count: 1 }, { slot: 'RB', count: 2 }, { slot: 'WR', count: 2 },
+  { slot: 'TE', count: 1 }, { slot: 'W/R', count: 1 }, { slot: 'BN', count: 6 },
+];
+
+test('the first player at an empty position is worth all of his value', async () => {
+  const { rosterFit } = await import('../src/engine/draft.mjs');
+  assert.equal(rosterFit('QB', [], ONE_QB, 12), 1);
+  assert.equal(rosterFit('RB', [], ONE_QB, 12), 1);
+});
+
+test('a second QB in a one-QB league is worth a fraction of a starter', async () => {
+  const { rosterFit } = await import('../src/engine/draft.mjs');
+  const fit = rosterFit('QB', [{ pos: 'QB' }], ONE_QB, 12);
+  assert.ok(fit < 0.4, `a backup QB who will not play cannot keep most of his value (got ${fit})`);
+  assert.ok(fit > 0, 'but he is not worthless — byes, injuries and trade value are real');
+});
+
+test('running back depth keeps far more value than a backup kicker', async () => {
+  const { rosterFit } = await import('../src/engine/draft.mjs');
+  // Backs get hurt and flex slots are hungry, so RB depth starts games. A
+  // second kicker never plays a down, because kickers are streamed.
+  const rb = rosterFit('RB', [{ pos: 'RB' }, { pos: 'RB' }], ONE_QB, 12);
+  const k = rosterFit('K', [{ pos: 'K' }], ONE_QB, 12);
+  assert.ok(rb > 0.4, `RB depth is genuinely useful (got ${rb})`);
+  assert.ok(k < 0.15, `a second kicker is a wasted roster spot (got ${k})`);
+  assert.ok(rb > k * 3);
+});
+
+test('a superflex league does not discount the second quarterback', async () => {
+  const { rosterFit } = await import('../src/engine/draft.mjs');
+  // Demand comes from the league's own slots, so this needs no special case —
+  // but it only works if a QB-eligible flex is understood to be a QB slot in
+  // practice, which is the whole premise of superflex.
+  const SUPERFLEX = [
+    { slot: 'QB', count: 1 }, { slot: 'Q/W/R/T', count: 1 }, { slot: 'RB', count: 2 },
+    { slot: 'WR', count: 2 }, { slot: 'TE', count: 1 }, { slot: 'BN', count: 6 },
+  ];
+  const second = rosterFit('QB', [{ pos: 'QB' }], SUPERFLEX, 12);
+  assert.ok(second > 0.7, `the second QB starts every week in superflex (got ${second})`);
+  assert.ok(second > rosterFit('QB', [{ pos: 'QB' }], ONE_QB, 12) * 2);
+  // The third is a genuine backup again.
+  assert.ok(rosterFit('QB', [{ pos: 'QB' }, { pos: 'QB' }], SUPERFLEX, 12) < 0.4);
+});
+
+test('a filled position cannot outrank an empty one on equal value', async () => {
+  const { recommendPick } = await import('../src/engine/draft.mjs');
+  const mk = (id, pos, mean) => ({ player_id: id, name: id, pos, mean, sd: mean * 0.35, adp: 20, games: 5, status: '' });
+  // A deep field at each position so replacement level is meaningful.
+  const available = [];
+  for (let i = 0; i < 40; i++) {
+    available.push(mk(`qb${i}`, 'QB', 30 - i * 0.4));
+    available.push(mk(`rb${i}`, 'RB', 30 - i * 0.4));
+    available.push(mk(`wr${i}`, 'WR', 20 - i * 0.3));
+    available.push(mk(`te${i}`, 'TE', 14 - i * 0.3));
+  }
+  const rec = recommendPick({
+    available,
+    myRoster: [mk('mine', 'QB', 30)],   // my QB slot is already filled
+    rosterSlots: ONE_QB, numTeams: 12,
+    pickNumber: 20, nextPickNumber: 29, opponents: [], sims: 40, limit: 5,
+  });
+  assert.notEqual(rec.board[0].pos, 'QB',
+    `with the QB slot filled and RBs of equal value on the board, the top pick must not be a QB (got ${rec.board[0].name})`);
+});

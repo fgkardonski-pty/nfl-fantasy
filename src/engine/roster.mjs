@@ -140,7 +140,16 @@ export function positionalDemand(rosterSlots, numTeams) {
     } else {
       // Flex demand does not split evenly in practice: it is absorbed by the
       // deepest, cheapest position pool. Weight by realistic flex usage.
-      const weights = { RB: 0.45, WR: 0.45, TE: 0.08, QB: 0.02 };
+      //
+      // A slot that admits quarterbacks is a different animal. Quarterbacks
+      // outscore every other position by enough that essentially every manager
+      // starts one there, which is the entire premise of a superflex league —
+      // so that slot is a quarterback slot in all but name. Splitting it evenly
+      // would report a superflex league as needing barely more than one
+      // quarterback per team, and value the second one as a bench player.
+      const weights = elig.includes('QB')
+        ? { QB: 0.9, RB: 0.04, WR: 0.04, TE: 0.02 }
+        : { RB: 0.45, WR: 0.45, TE: 0.08, QB: 0.02 };
       const total = elig.reduce((a, p) => a + (weights[p] ?? 0), 0) || elig.length;
       for (const p of elig) demand[p] += (weights[p] ?? 1) / total;
     }
