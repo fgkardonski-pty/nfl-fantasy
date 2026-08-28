@@ -373,3 +373,90 @@ test('a filled position cannot outrank an empty one on equal value', async () =>
   assert.notEqual(rec.board[0].pos, 'QB',
     `with the QB slot filled and RBs of equal value on the board, the top pick must not be a QB (got ${rec.board[0].name})`);
 });
+
+// ---------------------------------------------------------------------------
+// The opponent model must predict OPPONENTS, not us
+// ---------------------------------------------------------------------------
+
+/**
+ * The rivals in the room do not share our valuation. Where a player has a real
+ * ADP, that ADP predicts when he leaves the board — and the whole edge of a
+ * scoring-aware valuation is knowing that the market has NOT priced a player
+ * the way this league's rules do.
+ *
+ * The defect: the composite rank took the better of ADP and our own valuation,
+ * so a quarterback our model loved was assumed to be loved by everyone. In a
+ * QB-premium league that meant a QB with an ADP of 55 was modelled as the first
+ * pick of the draft, reported as unlikely to survive, and urgently recommended
+ * — when in truth he was available two rounds later and the early pick should
+ * have gone elsewhere. The engine destroyed the exact advantage it exists to
+ * find.
+ */
+test('a real ADP is used as-is, not overridden by our own valuation', async () => {
+  const { draftRanks } = await import('../src/engine/draft.mjs');
+  const ranks = draftRanks([
+    // We rate him best in the pool; the market has him going in round four.
+    { player_id: 'undervalued', pos: 'QB', vor: 99, adp: 55 },
+    { player_id: 'consensus', pos: 'RB', vor: 10, adp: 1 },
+  ]);
+  assert.equal(ranks.get('undervalued'), 55,
+    'opponents draft him at his ADP, however much we like him');
+  assert.equal(ranks.get('consensus'), 1);
+});
+
+test('our valuation still fills in for players the market has no opinion on', async () => {
+  const { draftRanks } = await import('../src/engine/draft.mjs');
+  // Without this, a player with no ADP sits at the back of every shortlist, is
+  // never taken by the model, survives every simulation, and collapses VONA for
+  // his whole position.
+  const ranks = draftRanks([
+    { player_id: 'known', pos: 'RB', vor: 5, adp: 30 },
+    { player_id: 'breakout', pos: 'RB', vor: 40, adp: null },
+    { player_id: 'filler', pos: 'WR', vor: 1, adp: null },
+  ]);
+  assert.equal(ranks.get('known'), 30);
+  assert.equal(ranks.get('breakout'), 1, 'top of our board stands in for a missing ADP');
+  assert.ok(ranks.get('filler') > ranks.get('breakout'));
+});
+
+test('a player the market undervalues is reported as likely to survive', async () => {
+  const { computeVona } = await import('../src/engine/draft.mjs');
+  const pool = [];
+  // A field of consensus players who will go early...
+  for (let i = 0; i < 60; i++) {
+    pool.push({ player_id: `c${i}`, name: `C${i}`, pos: i % 2 ? 'RB' : 'WR', mean: 20 - i * 0.2, vor: 15 - i * 0.2, adp: i + 1 });
+  }
+  // ...and one our scoring loves who the market takes in round five.
+  pool.push({ player_id: 'sleeper', name: 'Sleeper QB', pos: 'QB', mean: 50, vor: 18, adp: 70 });
+
+  const { survivalProb } = computeVona(pool, {
+    pickNumber: 5, nextPickNumber: 30, opponents: [{ bias: {} }], sims: 200, seed: 4,
+  });
+  const survives = survivalProb.get('sleeper');
+  assert.ok(survives > 0.8,
+    `an ADP-70 player should almost certainly last to pick 30 (got ${(survives * 100).toFixed(0)}%)`);
+  // The consensus RB1 should not.
+  assert.ok(survivalProb.get('c1') < 0.5);
+});
+
+test('waiting is preferred when the value will still be there', async () => {
+  const { recommendPick } = await import('../src/engine/draft.mjs');
+  const available = [];
+  for (let i = 0; i < 50; i++) {
+    available.push({ player_id: `rb${i}`, name: `RB${i}`, pos: 'RB', mean: 26 - i * 0.55, sd: 6, adp: i + 1, games: 5, status: '' });
+    available.push({ player_id: `wr${i}`, name: `WR${i}`, pos: 'WR', mean: 21 - i * 0.3, sd: 5, adp: i + 1, games: 5, status: '' });
+    // Quarterbacks the market ignores until much later.
+    available.push({ player_id: `qb${i}`, name: `QB${i}`, pos: 'QB', mean: 50 - i * 0.6, sd: 9, adp: 55 + i, games: 5, status: '' });
+  }
+  const rec = recommendPick({
+    available, myRoster: [],
+    rosterSlots: [{ slot: 'QB', count: 1 }, { slot: 'RB', count: 2 }, { slot: 'WR', count: 2 }, { slot: 'BN', count: 6 }],
+    numTeams: 16, pickNumber: 5, nextPickNumber: 30, opponents: [], sims: 120, limit: 5,
+  });
+  // The scarce asset is the one that will be gone. Taking the QB here spends an
+  // early pick on a player still available two rounds later.
+  assert.notEqual(rec.board[0].pos, 'QB',
+    `should take the player who will be gone, not the one who will not (got ${rec.board[0].name})`);
+  assert.ok(rec.vona.QB.vona < rec.vona.RB.vona,
+    'waiting must cost less at the position the market has not bid up');
+});

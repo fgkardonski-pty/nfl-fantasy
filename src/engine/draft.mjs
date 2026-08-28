@@ -25,18 +25,30 @@ import { positionalDemand, startingSlots, POSITIONS } from './roster.mjs';
 import { softmax, clamp, mean, round } from '../util/stats.mjs';
 
 /**
- * A single ordering for "who is realistically on the board".
+ * The order the OPPONENTS will draft in — not the order we would.
  *
- * ADP is the best available signal for what opponents will do, but real ADP
- * data is sparse — it covers only players who were actually drafted, so a
- * mid-season free agent or an undrafted breakout has none. Sorting by ADP alone
- * pushes every such player to the back of the shortlist, where the opponent
- * model never touches them, so they "survive" every simulation and VONA
- * collapses to zero for their whole position.
+ * This is the single most important distinction in the whole engine, and
+ * getting it wrong destroys the edge it exists to find. The rivals in the room
+ * do not share our valuation. They draft near public consensus, so where a
+ * player has a real ADP, that ADP is what predicts when he leaves the board.
  *
- * The composite rank takes the better of a player's ADP and his rank by our own
- * valuation, so a genuinely valuable player is always in contention regardless
- * of whether ADP knows about him.
+ * The previous version took the BETTER of ADP and our own valuation rank. The
+ * intent was sound — a player with no ADP would otherwise sit at the back of
+ * the shortlist, never be taken by the model, and appear to survive every
+ * simulation, collapsing VONA for his whole position. But applying it to
+ * players who DO have an ADP asserts that opponents value players exactly as we
+ * do, which is precisely false whenever our valuation is most useful.
+ *
+ * In a league whose scoring makes quarterbacks far more valuable than the
+ * public consensus does, it went badly wrong. A quarterback with an ADP of 55
+ * was ranked 1st, so the model had fifteen rivals fighting over him, reported
+ * an 18% chance he survived twenty-five picks, and urged taking him
+ * immediately. In reality nobody else in that room wants him yet — he is
+ * available a full two rounds later, and the entire advantage lies in knowing
+ * that and spending the early pick elsewhere.
+ *
+ * So: a real ADP is used as it stands. Our valuation fills in ONLY where the
+ * market has no opinion at all, which is the case the fallback was written for.
  */
 export function draftRanks(available) {
   // Rank by VALUE OVER REPLACEMENT where we have it, not raw projected points.
@@ -48,9 +60,8 @@ export function draftRanks(available) {
   const valueRank = new Map(byValue.map((p, i) => [p.player_id, i + 1]));
   const ranks = new Map();
   for (const p of available) {
-    const vr = valueRank.get(p.player_id) ?? 999;
-    const adp = Number.isFinite(p.adp) ? p.adp : Infinity;
-    ranks.set(p.player_id, Math.min(adp, vr));
+    const adp = Number.isFinite(p.adp) ? p.adp : null;
+    ranks.set(p.player_id, adp ?? valueRank.get(p.player_id) ?? 999);
   }
   return ranks;
 }
