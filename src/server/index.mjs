@@ -17,7 +17,12 @@ export function createServer() {
     const started = Date.now();
     res.on('finish', () => {
       const ms = Date.now() - started;
-      if (ms > 1500) log.debug(`slow: ${req.method} ${req.url} ${res.statusCode} ${ms}ms`);
+      // Visible by default, and at a threshold a person would actually notice.
+      // During a live draft the gap between marking a pick and seeing the next
+      // recommendation is the only latency that costs anything, and "it feels
+      // slow" is not something anyone can act on — a number in the console is.
+      if (ms > 400) log.warn(`slow: ${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${ms}ms`);
+      else log.debug(`${req.method} ${req.url.split('?')[0]} ${res.statusCode} ${ms}ms`);
     });
 
     // The server binds to localhost by default and holds real credentials, so
