@@ -53,10 +53,38 @@ test('archetype lines interpolate between anchors rather than snapping', () => {
   assert.ok(r9 < r6 && r9 > r12, 'RB9 sits strictly between its bracketing anchors');
 });
 
-test('archetype lines hold flat past the last anchor instead of going negative', () => {
-  const deep = expectedPointsAtRank('WR', 500, STANDARD);
-  assert.ok(deep > 0, 'a very deep rank still produces non-negative value');
-  assert.equal(deep, expectedPointsAtRank('WR', 1000, STANDARD), 'held flat past the final anchor');
+/**
+ * Past the deepest anchor, production must DECAY toward zero — not repeat the
+ * last anchor forever.
+ *
+ * Holding it flat asserted that the 200th quarterback in the league produces
+ * exactly what the 40th does. Under a league paying per completion that was
+ * 28.8 points a game for a player who will not take a snap, and since every
+ * unranked player in the pool is priced off this curve, it handed a starter's
+ * valuation to several thousand practice-squad bodies. With an unfilled
+ * starting slot to fill, that was enough to put a long-retired quarterback at
+ * the top of a live draft board.
+ */
+test('archetype lines decay past the last anchor rather than holding flat', () => {
+  const deep = expectedPointsAtRank('WR', 100, STANDARD);
+  const deeper = expectedPointsAtRank('WR', 200, STANDARD);
+  const absurd = expectedPointsAtRank('WR', 1000, STANDARD);
+
+  assert.ok(deep > deeper, 'value keeps falling past the final anchor');
+  assert.ok(deeper > absurd, 'and keeps falling');
+  assert.ok(absurd >= 0, 'but never goes negative');
+  assert.ok(absurd < 0.01, `a 1000th-ranked receiver is worth essentially nothing (got ${absurd})`);
+});
+
+test('a player past the ranked pool is worth far less than one inside it', () => {
+  // The property that actually matters: someone the consensus board never
+  // ranked cannot out-value someone it did.
+  for (const [pos, lastRanked] of [['QB', 52], ['RB', 148], ['WR', 174], ['TE', 79]]) {
+    const inside = expectedPointsAtRank(pos, lastRanked, STANDARD);
+    const outside = expectedPointsAtRank(pos, Math.round(lastRanked * 1.2) + 5, STANDARD);
+    assert.ok(outside < inside,
+      `${pos}: an unranked player (${outside.toFixed(2)}) must price below the last ranked one (${inside.toFixed(2)})`);
+  }
 });
 
 test('derived first downs scale with the volume stat they come from', () => {

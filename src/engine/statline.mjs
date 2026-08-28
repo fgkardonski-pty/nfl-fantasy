@@ -36,9 +36,10 @@ import { gammaCdf } from '../util/stats.mjs';
 /**
  * Per-game production anchors by positional rank.
  *
- * Values between anchors are linearly interpolated; beyond the last anchor the
- * final entry is held flat. Numbers are typical NFL per-game production for a
- * player finishing at that positional rank.
+ * Values between anchors are linearly interpolated; beyond the last anchor they
+ * decay toward zero, because the anchors cover the fantasy-relevant pool and
+ * past it players do not merely produce less, they mostly do not play. Numbers
+ * are typical NFL per-game production for a player finishing at that rank.
  */
 const ANCHORS = {
   QB: [
@@ -119,10 +120,34 @@ const DERIVED = {
 /** Coefficient of variation for game-to-game yardage, used for threshold bonuses. */
 const YARD_CV = { pass_yd: 0.30, rush_yd: 0.55, rec_yd: 0.65, def_ret_yd: 0.80 };
 
+/**
+ * How fast production falls away past the deepest anchor, as a fraction of that
+ * anchor's rank. The anchors cover the fantasy-relevant pool at a position;
+ * beyond it sit third-string quarterbacks and practice-squad receivers who are
+ * not merely worse, they largely do not play.
+ */
+const TAIL_DECAY = 0.35;
+
 function interpolate(anchors, rank) {
   if (rank <= anchors[0].rank) return { ...anchors[0] };
   const last = anchors[anchors.length - 1];
-  if (rank >= last.rank) return { ...last };
+
+  // Past the deepest anchor, DECAY rather than repeat it. Returning the last
+  // anchor unchanged asserted that the 200th quarterback in the league produces
+  // exactly what the 40th does — in this league's scoring, 28.8 points a game
+  // for someone who will not take a snap. Every unranked player in the pool was
+  // priced off that flat line, and with an empty starting slot to fill it was
+  // enough to put a retired quarterback at the top of a live draft board.
+  if (rank > last.rank) {
+    const tau = Math.max(1, last.rank * TAIL_DECAY);
+    const mult = Math.exp(-(rank - last.rank) / tau);
+    const out = {};
+    for (const [key, v] of Object.entries(last)) {
+      if (key === 'rank') continue;
+      out[key] = (v ?? 0) * mult;
+    }
+    return out;
+  }
 
   for (let i = 0; i < anchors.length - 1; i++) {
     const a = anchors[i];

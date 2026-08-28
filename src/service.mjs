@@ -235,10 +235,30 @@ export function draftValues(league, players) {
     }
   }
 
-  // Replacement-ish rank per position, used only when a player has no ADP at
-  // all — the market has no opinion, so assume roster-filler production rather
-  // than inventing a rank.
-  const UNRANKED = { QB: 30, RB: 55, WR: 80, TE: 32, K: 28, DEF: 28 };
+  // Where to price a player the market has NO opinion on.
+  //
+  // These were fixed mid-tier ranks, which is far too generous. A consensus
+  // board covering five hundred players has an opinion about everyone worth
+  // drafting; a player absent from it is not the 30th-best quarterback, he is
+  // below the last one anybody bothered to rank. Pricing him as QB30 gave every
+  // practice-squad body in the pool a starter's valuation.
+  //
+  // So the floor is derived from how deep the published board actually goes at
+  // that position, with a margin, and falls back to a fixed guess only when
+  // nothing is loaded at all.
+  const FALLBACK_UNRANKED = { QB: 60, RB: 160, WR: 190, TE: 90, K: 40, DEF: 36 };
+  const UNRANKED = { ...FALLBACK_UNRANKED };
+  for (const r of all(
+    `SELECT p.pos pos, MAX(a.pos_rank) deepest
+       FROM adp a JOIN players p ON p.player_id = a.player_id
+      WHERE a.season = ? AND a.pos_rank IS NOT NULL
+      GROUP BY p.pos`,
+    [season]
+  )) {
+    if (Number.isFinite(r.deepest) && r.deepest > 0) {
+      UNRANKED[r.pos] = Math.round(r.deepest * 1.2) + 5;
+    }
+  }
 
   /**
    * Expected per-game points for a player, priced in THIS LEAGUE'S scoring.
