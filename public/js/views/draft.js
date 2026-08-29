@@ -312,6 +312,14 @@ export async function render(root) {
     .then((d) => { pool = d.players ?? []; searchInput.placeholder = `search ${d.count} players — Enter = opp took`; })
     .catch(() => { searchInput.placeholder = 'search unavailable — use the board buttons'; });
 
+  // Marks can be entered faster than a board can be drawn, so responses can
+  // come back out of order. Without a sequence number the last response to
+  // ARRIVE wins rather than the last one asked for, which quietly paints a
+  // board that does not match the picks recorded — the one failure here that
+  // would not look like a failure.
+  let refreshSeq = 0;
+  let painted = false;
+
   async function refresh() {
     // Every control and every mark routes through here, so this is the one
     // place a save has to happen for none to be missed.
@@ -321,7 +329,16 @@ export async function render(root) {
     resetBtn.textContent = state.drafted.length
       ? `reset draft (${state.drafted.length} marked)`
       : 'reset draft';
-    body.replaceChildren(loading('simulating the draft forward…'));
+
+    const seq = ++refreshSeq;
+    // Only the very first draw shows a spinner. After that the previous board
+    // stays on screen and dims: tearing the whole thing down and rebuilding it
+    // reads as a delay even when the new one arrives in a fifth of a second,
+    // and during a draft the old board is still the best answer available
+    // until the new one lands.
+    if (!painted) body.replaceChildren(loading('simulating the draft forward…'));
+    else body.style.opacity = '0.55';
+
     try {
       const params = new URLSearchParams({
         slot: String(state.slot), pick: String(state.pick),
@@ -331,8 +348,15 @@ export async function render(root) {
       if (state.mine.length) params.set('mine', state.mine.join(','));
       if (state.pos && state.pos !== 'ALL') params.set('pos', state.pos);
       const d = await api(`/api/draft/board?${params}`);
+      if (seq !== refreshSeq) return;            // superseded — a newer mark is in flight
       body.replaceChildren(board(d, numTeams, refresh));
-    } catch (err) { body.replaceChildren(errorBox(err)); }
+      painted = true;
+    } catch (err) {
+      if (seq !== refreshSeq) return;
+      body.replaceChildren(errorBox(err));
+    } finally {
+      if (seq === refreshSeq) body.style.opacity = '';
+    }
   }
   refresh();
 }
