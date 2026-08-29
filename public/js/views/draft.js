@@ -164,6 +164,34 @@ export async function render(root) {
       h('button.btn.sm', { onclick: () => { pastePanel.hidden = true; } }, 'close')),
     pasteReport
   );
+  /**
+   * Write the finished draft into the database.
+   *
+   * Until this runs the team exists only in this browser, which means every
+   * season-long view is blind to it and a cleared cache loses the lot.
+   */
+  const saveBtn = h('button.btn.sm.primary', {
+    title: 'Write your drafted team into the database so the war room, waivers and trades can use it.',
+    onclick: async () => {
+      if (!state.mine.length) { alert('Nothing marked as yours yet — use Shift+Enter or "I took".'); return; }
+      saveBtn.disabled = '';
+      saveBtn.textContent = 'saving…';
+      try {
+        const r = await api('/api/draft/commit', {
+          method: 'POST',
+          body: { mine: state.mine, drafted: state.drafted },
+        });
+        saveBtn.textContent = `saved ${r.saved} \u2713`;
+        alert(`Saved ${r.saved} players to ${r.team} for week ${r.week}`
+          + ` (${r.starters} starters, ${r.bench} bench).\n\n`
+          + 'Your team now survives a cleared browser, and the War Room, Waivers and Trades pages can see it.');
+      } catch (err) {
+        saveBtn.textContent = 'save team';
+        alert('Could not save: ' + (err?.message ?? err));
+      } finally { saveBtn.disabled = null; }
+    },
+  }, 'save team');
+
   const pasteBtn = h('button.btn.sm', {
     title: 'Catch up in bulk by pasting a list of names.',
     onclick: () => {
@@ -401,6 +429,7 @@ export async function render(root) {
     searchInput,
     undoBtn,
     pasteBtn,
+    saveBtn,
     resetBtn
   );
 

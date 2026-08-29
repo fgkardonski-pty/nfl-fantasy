@@ -8,7 +8,7 @@
  */
 import { Router, httpError, redirect, html } from './router.mjs';
 import config from '../config.mjs';
-import { all, get, run, meta, j } from '../db/index.mjs';
+import { all, get, run, meta, j, upsertMany } from '../db/index.mjs';
 import * as S from '../service.mjs';
 import { generateDemoLeague } from '../demo.mjs';
 import * as oauth from '../providers/yahoo/oauth.mjs';
@@ -362,6 +362,85 @@ export function buildApi() {
       // draftable rather than the alphabetically luckiest practice-squad body.
       .sort((x, y) => (x.a ?? 1e9) - (y.a ?? 1e9) || x.n.localeCompare(y.n));
     return { season, count: players.length, players };
+  });
+
+  /**
+   * Commit a finished draft to the database.
+   *
+   * The draft room keeps its picks in the browser so it can stay instant under
+   * a pick clock. That is the right place for them DURING a draft and the wrong
+   * place afterwards: every season-long view — the war room, waivers, trades,
+   * opponent dossiers — reads rosters from the database, so until this runs
+   * they cannot see the team at all. Browser storage is also one cleared cache
+   * away from losing a whole draft.
+   *
+   * Idempotent: committing twice replaces the same week's roster rather than
+   * doubling it.
+   */
+  r.post('/api/draft/commit', ({ body, query }) => {
+    const league = requireLeague(query);
+    const week = int(body?.week, league.current_week ?? 1);
+    const mine = Array.isArray(body?.mine) ? body.mine.filter(Boolean) : [];
+    const drafted = Array.isArray(body?.drafted) ? body.drafted.filter(Boolean) : [];
+    if (!mine.length) throw httpError(400, 'No players to save.', 'Mark your own picks with "I took" first.');
+
+    const me = S.myTeam(league.league_key);
+    if (!me) {
+      throw httpError(400, 'No team is flagged as yours.',
+        'Set one on the Data & Yahoo page, or run: node bin/oracle.mjs real league --file <league.json>');
+    }
+
+    const players = all('SELECT * FROM players').filter((p) => mine.includes(p.player_id));
+    if (!players.length) throw httpError(400, 'None of those players are in the database.');
+
+    // Record who starts, so the season views open on a legal lineup rather than
+    // an unassigned pile.
+    const valued = S.draftValues(league, players);
+    const { lineup } = optimalLineup(valued, league.rosterSlots, (p) => p.mean);
+    const slotOf = new Map();
+    for (const s of lineup) {
+      if (s.player && !s.player.__phantom) slotOf.set(s.player.player_id, s.slot);
+    }
+
+    run('DELETE FROM rosters WHERE league_key = ? AND team_key = ? AND week = ?',
+      [league.league_key, me.team_key, week]);
+    upsertMany('rosters',
+      ['league_key', 'team_key', 'player_id', 'week', 'slot', 'is_starter', 'acquired'],
+      players.map((p) => ({
+        league_key: league.league_key,
+        team_key: me.team_key,
+        player_id: p.player_id,
+        week,
+        slot: slotOf.get(p.player_id) ?? 'BN',
+        is_starter: slotOf.has(p.player_id) ? 1 : 0,
+        acquired: 'draft',
+      }),
+      ), ['league_key', 'team_key', 'player_id', 'week']);
+
+    // The full pick order, so "who else took whom" survives too.
+    if (drafted.length) {
+      run('DELETE FROM draft_picks WHERE league_key = ?', [league.league_key]);
+      upsertMany('draft_picks', ['league_key', 'pick', 'round', 'team_key', 'player_id', 'cost'],
+        drafted.map((id, i) => ({
+          league_key: league.league_key,
+          pick: i + 1,
+          round: Math.floor(i / Math.max(1, league.num_teams)) + 1,
+          team_key: mine.includes(id) ? me.team_key : null,
+          player_id: id,
+          cost: null,
+        })), ['league_key', 'pick']);
+    }
+
+    S.invalidateOutlook();
+    const starters = players.filter((p) => slotOf.has(p.player_id)).length;
+    return {
+      saved: players.length,
+      starters,
+      bench: players.length - starters,
+      draftPicks: drafted.length,
+      team: me.name,
+      week,
+    };
   });
 
   r.get('/api/draft/tiers', ({ query }) => {
