@@ -94,6 +94,7 @@ export async function render(root) {
   let pool = [];
   let matches = [];
   let cursor = 0;
+  let fuzzy = false;
   const undoStack = [];
 
   const norm = (v) => String(v ?? '').toLowerCase().replace(/[^a-z]/g, '');
@@ -141,6 +142,53 @@ export async function render(root) {
     },
   }, 'paste picks');
 
+  /**
+   * Edit distance, abandoned as soon as it cannot come in under `max`.
+   *
+   * Only ever used as a FALLBACK. Marking the wrong player is far worse than
+   * failing to match one: a wrong mark silently removes a real player from the
+   * board and adds someone who is still available, and nothing on screen says
+   * so. Exact and substring matching are tried first and always win.
+   */
+  function editDistance(a, b, max) {
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const row = [i];
+      let best = i;
+      for (let jj = 1; jj <= b.length; jj++) {
+        const cost = a[i - 1] === b[jj - 1] ? 0 : 1;
+        row[jj] = Math.min(prev[jj] + 1, row[jj - 1] + 1, prev[jj - 1] + cost);
+        if (row[jj] < best) best = row[jj];
+      }
+      if (best > max) return max + 1;      // no path can still get under the cap
+      prev = row;
+    }
+    return prev[b.length];
+  }
+
+  /**
+   * Closest ranked players to a query that matched nothing exactly.
+   *
+   * Restricted to players the consensus board ranks: a misspelling is almost
+   * always of someone draftable, and it keeps a long paste instant by comparing
+   * against roughly five hundred names instead of several thousand.
+   */
+  function fuzzyMatches(q, taken) {
+    if (q.length < 4) return [];           // too short to correct safely
+    const max = q.length <= 6 ? 1 : 2;
+    const out = [];
+    for (const p of pool) {
+      if (p.a == null || taken.has(p.i)) continue;
+      const n = norm(p.n);
+      // Compare against the surname too, since "gibbs" should reach "Jahmyr Gibbs".
+      const surname = norm(String(p.n).split(/\s+/).slice(-1)[0]);
+      const d = Math.min(editDistance(q, n, max), editDistance(q, surname, max));
+      if (d <= max) out.push({ p, d });
+    }
+    return out.sort((x, y) => x.d - y.d || (x.p.a ?? 1e9) - (y.p.a ?? 1e9));
+  }
+
   function runSearch() {
     const q = norm(searchInput.value);
     matches = [];
@@ -154,7 +202,13 @@ export async function render(root) {
           if (matches.length >= 8) break;   // pool is ADP-sorted, so these are the draftable ones
         }
       }
-    }
+      // Nothing spelled that way — offer the nearest ranked names instead of
+      // an empty box, which under a pick clock is the least useful answer.
+      if (!matches.length) {
+        fuzzy = true;
+        matches = fuzzyMatches(q, taken).slice(0, 5).map((m) => m.p);
+      } else fuzzy = false;
+    } else fuzzy = false;
     renderMatches();
   }
 
@@ -167,8 +221,10 @@ export async function render(root) {
     searchResults.hidden = false;
     searchResults.replaceChildren(
       h('div.card.tight.mb',
-        h('div.xs.mute', { style: { marginBottom: '6px' } },
-          'ENTER = OPP TOOK   ·   SHIFT+ENTER = I TOOK   ·   \u2191\u2193 TO MOVE'),
+        h('div.xs', { class: fuzzy ? 'warnc' : 'mute', style: { marginBottom: '6px' } },
+          fuzzy
+            ? 'NO EXACT MATCH \u2014 CLOSEST NAMES, CHECK BEFORE MARKING'
+            : 'ENTER = OPP TOOK   \u00b7   SHIFT+ENTER = I TOOK   \u00b7   \u2191\u2193 TO MOVE'),
         ...matches.map((p, i) => h('div.row-flex', {
           style: {
             padding: '4px 6px',
@@ -233,12 +289,32 @@ export async function render(root) {
     const taken = new Set(state.drafted);
     const hit = [];
     const missed = [];
+    const corrected = [];
+    const ambiguous = [];
     for (const line of lines) {
       // Tolerate "12. Bijan Robinson RB ATL" and similar pasted formats.
       const q = norm(line.replace(/^[\d.\s]+/, ''));
       if (q.length < 3) { missed.push(line); continue; }
-      const found = pool.find((p) => !taken.has(p.i) && norm(p.n).includes(q))
+
+      let found = pool.find((p) => !taken.has(p.i) && norm(p.n).includes(q))
         ?? pool.find((p) => !taken.has(p.i) && q.includes(norm(p.n)));
+
+      if (!found) {
+        // Approximate, and only when it is not a close call. A near-tie means
+        // guessing between two real players, and marking the wrong one removes
+        // someone still available from the board while adding someone who is
+        // not — a mistake nothing on screen would reveal. Better to report it
+        // and let a person decide.
+        const near = fuzzyMatches(q, taken);
+        if (near.length && (near.length === 1 || near[0].d < near[1].d)) {
+          found = near[0].p;
+          corrected.push(`${line} \u2192 ${found.n}`);
+        } else if (near.length) {
+          ambiguous.push(`${line} (${near.slice(0, 3).map((m) => m.p.n).join(' / ')})`);
+          continue;
+        }
+      }
+
       if (!found) { missed.push(line); continue; }
       taken.add(found.i);
       state.drafted.push(found.i);
@@ -248,6 +324,14 @@ export async function render(root) {
     }
     pasteReport.replaceChildren(
       h('div', `Marked ${hit.length}${asMine ? ' as your picks' : ' as taken'}.`),
+      // Corrections are shown so they can be eyeballed and undone, never
+      // applied silently.
+      corrected.length
+        ? h('div.warnc', `Spelling corrected (${corrected.length}) — check these: ${corrected.slice(0, 6).join('; ')}${corrected.length > 6 ? ' …' : ''}`)
+        : null,
+      ambiguous.length
+        ? h('div.warnc', `Too close to call, NOT marked (${ambiguous.length}): ${ambiguous.slice(0, 4).join('; ')}`)
+        : null,
       missed.length
         ? h('div.warnc', `Not matched (${missed.length}): ${missed.slice(0, 8).join(', ')}${missed.length > 8 ? ' …' : ''}`)
         : null
