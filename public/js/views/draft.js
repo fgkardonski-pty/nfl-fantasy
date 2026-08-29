@@ -120,6 +120,36 @@ export async function render(root) {
     onclick: undoLast,
   }, 'undo');
 
+  /**
+   * What the last keystroke actually did.
+   *
+   * Enter and Shift+Enter differ only in a modifier, and after the fact both
+   * look the same: the player leaves the board either way. Pressing Enter when
+   * Shift+Enter was meant hands your pick to a rival, and the only visible
+   * difference is a roster count that did not move — easy to miss on the clock,
+   * and by then several more picks have gone by. So the last action states
+   * itself, in the words that matter: whose player he now is.
+   */
+  const lastAction = h('div.mb', { hidden: true });
+
+  function showLastAction(entry) {
+    if (!entry) { lastAction.hidden = true; lastAction.replaceChildren(); return; }
+    lastAction.hidden = false;
+    lastAction.replaceChildren(
+      h('div.card.tight',
+        h('div.row-flex',
+          h('span.xs.mute', 'LAST MARK'),
+          h('span.pname', entry.name),
+          h('span', { class: entry.isMine ? 'good' : 'warnc', style: { fontWeight: '650' } },
+            entry.isMine ? '\u2192 YOUR ROSTER' : '\u2192 opponent'),
+          h('button.btn.sm', { style: { marginLeft: 'auto' }, onclick: undoLast }, 'undo this'),
+          entry.isMine
+            ? null
+            : h('span.xs.mute', 'Shift+Enter would have made this your pick')
+        ))
+    );
+  }
+
   const pasteBox = h('textarea', {
     rows: '6',
     placeholder: 'Paste picks, one player per line — useful when autopick has run ahead of you.',
@@ -260,7 +290,7 @@ export async function render(root) {
     state.pick += 1;
     undoStack.push({ id: player.i, isMine, name: player.n });
     undoBtn.disabled = null;
-    undoBtn.textContent = `undo ${player.n.split(' ').slice(-1)[0]}`;
+    showLastAction(undoStack[undoStack.length - 1]);
     searchInput.value = '';
     matches = [];
     renderMatches();
@@ -279,7 +309,7 @@ export async function render(root) {
     }
     state.pick = Math.max(1, state.pick - 1);
     const next = undoStack[undoStack.length - 1];
-    undoBtn.textContent = next ? `undo ${next.name.split(' ').slice(-1)[0]}` : 'undo';
+    showLastAction(next);
     if (!next) undoBtn.disabled = '';
     refresh();
   }
@@ -384,6 +414,7 @@ export async function render(root) {
       )
     ),
     controls,
+    lastAction,
     searchResults,
     pastePanel,
     body
