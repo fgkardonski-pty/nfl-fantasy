@@ -298,6 +298,11 @@ export function buildApi() {
       ...rest,
       board,
       posFilter: posFilter || null,
+      // The starting lineup this league actually plays. Flex slots do not
+      // appear in roster need — their demand is distributed across the
+      // positions eligible to fill them — so without this the panel looks like
+      // it has simply forgotten they exist.
+      startingSlots: league.slots,
       pickNumber,
       nextPickNumber: nextPick,
       // Trimmed, not the full projection object — the client only renders name/pos.

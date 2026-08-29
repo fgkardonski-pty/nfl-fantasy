@@ -523,3 +523,66 @@ test('at the turn, scarcity is measured rather than collapsing to zero', async (
   assert.ok(real.board[0].survivalToNextPick < 0.9,
     'and the best player is no longer certain to last');
 });
+
+// ---------------------------------------------------------------------------
+// Roster need must respect what each flex slot can actually take
+// ---------------------------------------------------------------------------
+
+/**
+ * Flex demand was spread evenly over RB, WR and TE with a flat constant. That
+ * is right only for a W/R/T flex. Given a W/T and a W/R — a back cannot fill
+ * the first, a tight end cannot fill the second, and a receiver fills either —
+ * it overstated tight ends by half and understated receivers by a quarter.
+ *
+ * Replacement levels already read eligibility correctly, so the engine was
+ * disagreeing with itself about the same league while roster need drove what
+ * got drafted.
+ */
+const TWO_DISTINCT_FLEX = [
+  { slot: 'QB', count: 1 }, { slot: 'WR', count: 1 }, { slot: 'RB', count: 1 },
+  { slot: 'TE', count: 1 }, { slot: 'W/T', count: 1 }, { slot: 'W/R', count: 1 },
+  { slot: 'K', count: 1 }, { slot: 'DEF', count: 1 }, { slot: 'BN', count: 5 },
+];
+
+test('need matches the demand replacement levels are computed from', async () => {
+  const { rosterNeed } = await import('../src/engine/draft.mjs');
+  const { positionalDemand } = await import('../src/engine/roster.mjs');
+  const need = rosterNeed([], TWO_DISTINCT_FLEX);
+  const { perTeam } = positionalDemand(TWO_DISTINCT_FLEX, 1);
+  for (const pos of ['QB', 'RB', 'WR', 'TE', 'K', 'DEF']) {
+    assert.ok(Math.abs(need[pos] - perTeam[pos]) < 1e-9,
+      `${pos}: need ${need[pos]} must equal demand ${perTeam[pos]} — one engine, one answer`);
+  }
+});
+
+test('a receiver eligible for both flexes is needed more than a tight end', async () => {
+  const { rosterNeed } = await import('../src/engine/draft.mjs');
+  const need = rosterNeed([], TWO_DISTINCT_FLEX);
+  assert.ok(need.WR > need.RB, 'WR fills both flex slots, RB only one');
+  assert.ok(need.RB > need.TE, 'and RB is favoured over TE in the W/R it shares');
+  assert.ok(need.WR > 2, `WR demand exceeds its one dedicated slot (got ${need.WR.toFixed(2)})`);
+  assert.ok(need.TE < 1.5, `TE demand barely exceeds its one slot (got ${need.TE.toFixed(2)})`);
+});
+
+test('a combined W/R/T flex still splits between the three that can fill it', async () => {
+  const { rosterNeed } = await import('../src/engine/draft.mjs');
+  const combined = [
+    { slot: 'QB', count: 1 }, { slot: 'WR', count: 1 }, { slot: 'RB', count: 1 },
+    { slot: 'TE', count: 1 }, { slot: 'W/R/T', count: 2 }, { slot: 'BN', count: 5 },
+  ];
+  const need = rosterNeed([], combined);
+  assert.ok(need.RB > 1 && need.WR > 1 && need.TE > 1, 'all three carry flex demand here');
+  assert.equal(need.QB, 1, 'a position with no flex eligibility is untouched');
+});
+
+test('filling a slot reduces need for that position only', async () => {
+  const { rosterNeed } = await import('../src/engine/draft.mjs');
+  const empty = rosterNeed([], TWO_DISTINCT_FLEX);
+  const withRb = rosterNeed([{ pos: 'RB' }], TWO_DISTINCT_FLEX);
+  assert.ok(withRb.RB < empty.RB);
+  assert.equal(withRb.WR, empty.WR, 'taking a back does not reduce the need for receivers');
+  assert.ok(withRb.RB >= 0, 'need never goes negative');
+  // Over-filling a position bottoms out rather than going negative.
+  const many = rosterNeed([{ pos: 'TE' }, { pos: 'TE' }, { pos: 'TE' }], TWO_DISTINCT_FLEX);
+  assert.equal(many.TE, 0);
+});

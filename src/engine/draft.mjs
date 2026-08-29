@@ -21,7 +21,7 @@
  */
 import { Rng } from '../util/rng.mjs';
 import { computeVor, tierize, tierSummary, scarcity } from './vor.mjs';
-import { positionalDemand, startingSlots, POSITIONS } from './roster.mjs';
+import { positionalDemand, POSITIONS } from './roster.mjs';
 import { softmax, clamp, mean, round } from '../util/stats.mjs';
 
 /**
@@ -385,22 +385,21 @@ function buildReasons(p, { v, needBonus, cliffBonus, risk, byePenalty, fit, surv
 
 /** Which starting slots remain unfilled on my roster, weighted by scarcity. */
 export function rosterNeed(myRoster, rosterSlots) {
-  const slots = startingSlots(rosterSlots);
+  // Demand comes from positionalDemand, which reads each flex slot's actual
+  // eligibility. The previous version spread flex demand evenly over RB, WR and
+  // TE with a flat constant, which is only right for a league whose flex is
+  // W/R/T. Given a W/T and a W/R — where a back cannot fill the first, a tight
+  // end cannot fill the second, and a receiver fills either — it overstated
+  // tight ends by half and understated receivers by a quarter. Replacement
+  // levels already used the correct figures, so the engine was disagreeing with
+  // itself about the same league, and roster need drives what gets drafted.
+  const { perTeam } = positionalDemand(rosterSlots, 1);
   const counts = {};
-  for (const p of myRoster) counts[p.pos] = (counts[p.pos] ?? 0) + 1;
-  const required = {};
-  for (const s of slots) {
-    if (POSITIONS.includes(s)) required[s] = (required[s] ?? 0) + 1;
-  }
+  for (const p of myRoster ?? []) counts[p.pos] = (counts[p.pos] ?? 0) + 1;
   const need = {};
   for (const pos of POSITIONS) {
-    need[pos] = Math.max(0, (required[pos] ?? 0) - (counts[pos] ?? 0));
+    need[pos] = Math.max(0, (perTeam[pos] ?? 0) - (counts[pos] ?? 0));
   }
-  // Flex slots create latent need across the flex-eligible positions.
-  const flexCount = slots.filter((s) => !POSITIONS.includes(s)).length;
-  const filled = Object.entries(counts).reduce((a, [pos, c]) => a + Math.max(0, c - (required[pos] ?? 0)), 0);
-  const flexNeed = Math.max(0, flexCount - filled);
-  for (const pos of ['RB', 'WR', 'TE']) need[pos] += flexNeed * 0.35;
   return need;
 }
 

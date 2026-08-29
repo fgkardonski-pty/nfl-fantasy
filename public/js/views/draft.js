@@ -172,7 +172,7 @@ function board(d, numTeams, refresh) {
         'Fix: paste a rankings list into rankings.txt, then run ',
         h('code', 'node bin/oracle.mjs real adp --file rankings.txt'))
     ) : null,
-    rosterPanel(d.myRoster, d.need),
+    rosterPanel(d.myRoster, d.need, d.startingSlots),
     top ? h('div.card.accent.mb',
       h('div.spread',
         h('div',
@@ -289,7 +289,7 @@ function board(d, numTeams, refresh) {
  * thirty-second clock that is the difference between using the tool and
  * ignoring it. Kept at the top for the same reason.
  */
-function rosterPanel(myRoster, need) {
+function rosterPanel(myRoster, need, startingSlots) {
   const order = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
   const byPos = new Map(order.map((p) => [p, []]));
   for (const p of myRoster ?? []) {
@@ -320,8 +320,37 @@ function rosterPanel(myRoster, need) {
           h('div.xs.mute', 'STILL NEEDED'),
           h('div.row-flex', { style: { marginTop: '4px', flexWrap: 'wrap', rowGap: '6px' } },
             ...open.map(([pos, v]) => badge(`${pos} ${n2(v)}`, v >= 1 ? 'bad' : 'warn'))))
-        : null
+        : null,
+      // Flex slots have no row of their own, because no single position owns
+      // one. Showing the lineup makes clear they are accounted for and explains
+      // why the counts above are fractional rather than whole.
+      flexNote(startingSlots)
     )
+  );
+}
+
+/**
+ * The league's starting lineup, with the flex slots called out.
+ *
+ * "Still needed" is per POSITION, but a flex slot belongs to no single
+ * position — its demand is split across whichever positions may fill it. That
+ * split is why the counts are fractional, and without seeing the slots a
+ * reader reasonably concludes the flex has been ignored.
+ */
+function flexNote(startingSlots) {
+  const slots = Array.isArray(startingSlots) ? startingSlots : [];
+  if (!slots.length) return null;
+  const flex = slots.filter((s) => String(s).includes('/'));
+  return h('div.mt-s',
+    h('div.xs.mute', 'STARTING LINEUP'),
+    h('div.row-flex', { style: { marginTop: '4px', flexWrap: 'wrap', rowGap: '6px' } },
+      ...slots.map((s) => badge(String(s), String(s).includes('/') ? 'info' : null))),
+    flex.length
+      ? h('div.hint', { style: { marginTop: '6px' } },
+        `${flex.join(' and ')} ${flex.length > 1 ? 'are flex slots' : 'is a flex slot'} — `
+        + 'their demand is split across the positions eligible to fill them, which is why the '
+        + 'counts above are fractional rather than whole.')
+      : null
   );
 }
 
