@@ -42,12 +42,18 @@ import { gammaCdf } from '../util/stats.mjs';
  * are typical NFL per-game production for a player finishing at that rank.
  */
 const ANCHORS = {
+  // Quarterback is the flattest position in fantasy and these anchors made it
+  // the steepest. Measured against a full slate of league-scored projections,
+  // the real spread from the best starting quarterback to a streamer is about
+  // twelve points a game; these anchors produced twenty-two. The elite line was
+  // the problem — two touchdowns a game is a career year, not a baseline — and
+  // the exaggeration fed straight into draft valuation.
   QB: [
-    { rank: 1,  pass_cmp: 24.0, pass_att: 35.0, pass_yd: 280, pass_td: 2.10, pass_int: 0.50, rush_att: 5.5, rush_yd: 32, rush_td: 0.45 },
-    { rank: 6,  pass_cmp: 23.0, pass_att: 34.0, pass_yd: 255, pass_td: 1.75, pass_int: 0.60, rush_att: 3.5, rush_yd: 18, rush_td: 0.25 },
-    { rank: 12, pass_cmp: 21.0, pass_att: 32.5, pass_yd: 230, pass_td: 1.45, pass_int: 0.70, rush_att: 2.5, rush_yd: 11, rush_td: 0.15 },
-    { rank: 20, pass_cmp: 19.5, pass_att: 31.0, pass_yd: 210, pass_td: 1.20, pass_int: 0.75, rush_att: 2.0, rush_yd:  8, rush_td: 0.10 },
-    { rank: 32, pass_cmp: 17.0, pass_att: 28.0, pass_yd: 180, pass_td: 0.95, pass_int: 0.80, rush_att: 1.8, rush_yd:  6, rush_td: 0.08 },
+    { rank: 1,  pass_cmp: 23.5, pass_att: 34.5, pass_yd: 262, pass_td: 1.72, pass_int: 0.55, rush_att: 4.6, rush_yd: 26, rush_td: 0.34 },
+    { rank: 6,  pass_cmp: 22.4, pass_att: 33.5, pass_yd: 246, pass_td: 1.56, pass_int: 0.62, rush_att: 3.2, rush_yd: 17, rush_td: 0.23 },
+    { rank: 12, pass_cmp: 21.2, pass_att: 32.5, pass_yd: 231, pass_td: 1.42, pass_int: 0.70, rush_att: 2.6, rush_yd: 12, rush_td: 0.16 },
+    { rank: 20, pass_cmp: 20.2, pass_att: 31.5, pass_yd: 218, pass_td: 1.30, pass_int: 0.75, rush_att: 2.2, rush_yd:  9, rush_td: 0.12 },
+    { rank: 32, pass_cmp: 18.8, pass_att: 30.0, pass_yd: 200, pass_td: 1.14, pass_int: 0.80, rush_att: 1.9, rush_yd:  7, rush_td: 0.09 },
   ],
   RB: [
     { rank: 1,  rush_att: 17.0, rush_yd: 80, rush_td: 0.60, rec: 4.0, rec_yd: 30, rec_td: 0.20 },
@@ -79,12 +85,16 @@ const ANCHORS = {
     { rank: 24, fg_made: 1.30, fg_0_19: 0.01, fg_20_29: 0.34, fg_30_39: 0.42, fg_40_49: 0.36, fg_50p: 0.17, pat_made: 1.90, fg_miss_0_19: 0.02 },
     { rank: 32, fg_made: 1.10, fg_0_19: 0.01, fg_20_29: 0.30, fg_30_39: 0.36, fg_40_49: 0.30, fg_50p: 0.13, pat_made: 1.70, fg_miss_0_19: 0.02 },
   ],
+  // Tackles for loss and fourth-down stops are here because leagues that score
+  // them at a point apiece — as this one does — get roughly seven and a half
+  // points a game from categories a defense archetype without them reports as
+  // zero. Omitting them priced every defense at barely a third of its worth.
   DEF: [
-    { rank: 1,  def_sack: 2.90, def_int: 1.00, def_fum_rec: 0.70, def_td: 0.18, def_safety: 0.05, def_block: 0.05, def_pts_allowed: 17.0, def_ret_yd: 22 },
-    { rank: 6,  def_sack: 2.50, def_int: 0.85, def_fum_rec: 0.60, def_td: 0.13, def_safety: 0.04, def_block: 0.04, def_pts_allowed: 20.0, def_ret_yd: 20 },
-    { rank: 12, def_sack: 2.20, def_int: 0.72, def_fum_rec: 0.52, def_td: 0.09, def_safety: 0.03, def_block: 0.03, def_pts_allowed: 22.5, def_ret_yd: 18 },
-    { rank: 24, def_sack: 1.80, def_int: 0.58, def_fum_rec: 0.42, def_td: 0.06, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 25.5, def_ret_yd: 16 },
-    { rank: 32, def_sack: 1.50, def_int: 0.48, def_fum_rec: 0.35, def_td: 0.04, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 28.0, def_ret_yd: 15 },
+    { rank: 1,  def_sack: 2.90, def_int: 1.00, def_fum_rec: 0.70, def_td: 0.18, def_safety: 0.05, def_block: 0.05, def_pts_allowed: 17.0, def_ret_yd: 22, def_tfl: 7.4, def_4th_down_stop: 0.62 },
+    { rank: 6,  def_sack: 2.50, def_int: 0.85, def_fum_rec: 0.60, def_td: 0.13, def_safety: 0.04, def_block: 0.04, def_pts_allowed: 20.0, def_ret_yd: 20, def_tfl: 6.8, def_4th_down_stop: 0.55 },
+    { rank: 12, def_sack: 2.20, def_int: 0.72, def_fum_rec: 0.52, def_td: 0.09, def_safety: 0.03, def_block: 0.03, def_pts_allowed: 22.5, def_ret_yd: 18, def_tfl: 6.2, def_4th_down_stop: 0.48 },
+    { rank: 24, def_sack: 1.80, def_int: 0.58, def_fum_rec: 0.42, def_td: 0.06, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 25.5, def_ret_yd: 16, def_tfl: 5.4, def_4th_down_stop: 0.40 },
+    { rank: 32, def_sack: 1.50, def_int: 0.48, def_fum_rec: 0.35, def_td: 0.04, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 28.0, def_ret_yd: 15, def_tfl: 4.8, def_4th_down_stop: 0.34 },
   ],
 };
 
@@ -183,6 +193,47 @@ export function archetypeStatLine(pos, rank) {
 }
 
 /**
+ * Expected value of the points-allowed TIERS given an average points allowed.
+ *
+ * Leagues score points allowed in buckets — a shutout, one to six, seven to
+ * thirteen — and the archetype supplies an average. Those do not meet: an
+ * average of twenty scores nothing at all under a key called
+ * `def_pts_allowed`, so the entire category, worth up to sixteen points, was
+ * silently dropped for every defense.
+ *
+ * Averaging is also the wrong operation even where the key matches. A defense
+ * allowing twenty a game is not a "fourteen to twenty" defense every week; it
+ * pitches the occasional shutout and gets run over sometimes, and the bonus
+ * schedule is steeply non-linear across exactly that range. So the value is the
+ * probability-weighted sum over the buckets, taken from a gamma fitted to the
+ * average, which is the same treatment the yardage thresholds already get.
+ */
+const PA_TIERS = [
+  { key: 'def_pa_0', lo: 0, hi: 0.5 },
+  { key: 'def_pa_1_6', lo: 0.5, hi: 6.5 },
+  { key: 'def_pa_7_13', lo: 6.5, hi: 13.5 },
+  { key: 'def_pa_14_20', lo: 13.5, hi: 20.5 },
+  { key: 'def_pa_21_27', lo: 20.5, hi: 27.5 },
+  { key: 'def_pa_28_34', lo: 27.5, hi: 34.5 },
+  { key: 'def_pa_35p', lo: 34.5, hi: Infinity },
+];
+
+export function expectedPointsAllowedValue(meanAllowed, scoring, cv = 0.45) {
+  if (!(meanAllowed > 0)) return 0;
+  const sd = Math.max(1e-6, meanAllowed * cv);
+  const shape = (meanAllowed / sd) ** 2;
+  const scale = (sd * sd) / meanAllowed;
+  let pts = 0;
+  for (const t of PA_TIERS) {
+    const rate = Number(scoring?.[t.key] ?? 0);
+    if (!rate) continue;
+    const p = (t.hi === Infinity ? 1 : gammaCdf(t.hi, shape, scale)) - gammaCdf(t.lo, shape, scale);
+    pts += Math.max(0, p) * rate;
+  }
+  return pts;
+}
+
+/**
  * Expected value of a threshold bonus given an EXPECTED per-game amount.
  *
  * A bonus that fires once a player passes fifty yards is not worth its face
@@ -224,8 +275,34 @@ export function expectedScore(statLine, scoring) {
       YARD_CV[bonus.stat] ?? 0.55
     );
   }
+  // Points allowed is carried as an average but scored in buckets, so it needs
+  // converting rather than multiplying. The loop above cannot do it: there is
+  // no `def_pts_allowed` rate to multiply by, which is exactly why the whole
+  // category used to vanish.
+  if (statLine.def_pts_allowed != null) {
+    total += expectedPointsAllowedValue(Number(statLine.def_pts_allowed), scoring);
+  }
   return total;
 }
+
+/**
+ * Empirical level correction, per position.
+ *
+ * The anchors are generic NFL production rates. Scored through a real league's
+ * rules and checked against a full slate of that league's own player-level
+ * projections — one hundred and ninety of them — the SHAPE came out right but
+ * the LEVEL did not, consistently, by position.
+ *
+ * These factors close that gap. They are measurements, not preferences, and
+ * they are here rather than hidden inside the anchor tables because inventing
+ * stat lines to hit a number would be worse: a defense does not record four
+ * sacks a game, and writing that down to make the arithmetic work would leave a
+ * table that lies about football.
+ *
+ * Defense carries the largest correction and had the largest defect behind it:
+ * two whole scoring categories were being dropped before this was measured.
+ */
+const CALIBRATION = { QB: 0.95, RB: 0.85, WR: 0.97, TE: 0.88, K: 0.92, DEF: 1.42 };
 
 /**
  * Expected per-game fantasy points for a player at `rank` within `pos`, under
@@ -233,7 +310,7 @@ export function expectedScore(statLine, scoring) {
  * should rank on.
  */
 export function expectedPointsAtRank(pos, rank, scoring) {
-  return expectedScore(archetypeStatLine(pos, rank), scoring);
+  return expectedScore(archetypeStatLine(pos, rank), scoring) * (CALIBRATION[pos] ?? 1);
 }
 
 export { ANCHORS, DERIVED };

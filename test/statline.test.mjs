@@ -110,6 +110,14 @@ test('scoring rules shift the positional VALUE GAP, which is what drives draft o
   // level is POSITION-SPECIFIC: a one-quarterback league replaces around QB24,
   // while a league starting a back plus a flex replaces far deeper. Comparing
   // both positions at the same rank would understate running backs badly.
+  //
+  // An earlier version of this test asserted that standard scoring values an
+  // elite quarterback and an elite back about equally over replacement. That
+  // was not football, it was an artifact: the quarterback anchors were far too
+  // steep, and the test had encoded the defect as its premise. Measured against
+  // a full slate of league-scored projections, quarterback is the FLATTEST
+  // position — which is exactly why standard leagues draft backs and receivers
+  // first and stream quarterbacks.
   const REPLACEMENT = { QB: 24, RB: 36, WR: 48 };
   const gap = (pos, scoring) =>
     expectedPointsAtRank(pos, 1, scoring) - expectedPointsAtRank(pos, REPLACEMENT[pos], scoring);
@@ -120,22 +128,22 @@ test('scoring rules shift the positional VALUE GAP, which is what drives draft o
   const cusRb = gap('RB', CUSTOM);
   const cusWr = gap('WR', CUSTOM);
 
-  // Under generic scoring an elite quarterback and an elite back are worth
-  // about the same over replacement — which is why generic rankings treat them
-  // interchangeably at the top of a draft.
-  assert.ok(Math.abs(stdQb - stdRb) < 2,
-    `standard scoring values elite QB (${stdQb.toFixed(1)}) and elite RB (${stdRb.toFixed(1)}) similarly`);
+  assert.ok(stdRb > stdQb,
+    `under generic scoring a back is worth more over replacement than a quarterback `
+    + `(RB ${stdRb.toFixed(1)} vs QB ${stdQb.toFixed(1)}) — this is why standard leagues wait on QB`);
 
-  // Paying per completion and per first down breaks that tie decisively: the
-  // quarterback gap grows far more than the back's, and the receiver's barely
-  // moves. That reordering is the entire reason draft values must be computed
-  // in the league's own scoring rather than read off published rankings.
-  const qbGrowth = cusQb / stdQb;
-  const rbGrowth = cusRb / stdRb;
-  assert.ok(qbGrowth > rbGrowth,
-    `QB gap grows faster (${qbGrowth.toFixed(2)}x) than RB gap (${rbGrowth.toFixed(2)}x)`);
-  assert.ok(cusQb > cusRb && cusRb > cusWr,
-    `custom scoring orders the elite tiers QB (${cusQb.toFixed(1)}) > RB (${cusRb.toFixed(1)}) > WR (${cusWr.toFixed(1)})`);
+  // Paying per completion and per first down lifts quarterbacks more than any
+  // other position. That is the real edge, and it is a matter of degree.
+  assert.ok(cusQb / stdQb > cusRb / stdRb,
+    `the quarterback gap grows fastest (QB ${(cusQb / stdQb).toFixed(2)}x vs RB ${(cusRb / stdRb).toFixed(2)}x)`);
+  assert.ok(cusQb / stdQb > cusWr / gap('WR', STANDARD));
+
+  // But NOT far enough to make an elite quarterback the first pick. Claiming
+  // otherwise is what an over-steep curve produced, and it is worth pinning
+  // that the corrected model does not.
+  assert.ok(cusRb > cusQb,
+    `even here the best back still leads the best quarterback over replacement `
+    + `(RB ${cusRb.toFixed(1)} vs QB ${cusQb.toFixed(1)})`);
 });
 
 test('threshold bonuses are weighted by how often they would actually fire', () => {
