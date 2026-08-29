@@ -17,7 +17,7 @@ import {
  */
 const STORE_KEY = 'oracle.draft.v1';
 
-const BLANK = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [], q: '', pos: 'ALL' };
+const BLANK = { slot: 1, pick: null, rounds: 16, drafted: [], mine: [], pos: 'ALL' };
 
 function loadState(leagueKey) {
   try {
@@ -27,8 +27,6 @@ function loadState(leagueKey) {
     return {
       ...BLANK,
       ...saved,
-      // Never restore a stale search box; it hides most of the board on load.
-      q: '',
       drafted: Array.isArray(saved.drafted) ? saved.drafted : [],
       mine: Array.isArray(saved.mine) ? saved.mine : [],
     };
@@ -46,13 +44,6 @@ function saveState(leagueKey) {
 
 let state = { ...BLANK };
 let storeKey = 'default';
-
-let searchTimer = null;
-/** Typing fires a Monte Carlo draft simulation per keystroke without this. */
-function debounceSearch(fn) {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(fn, 250);
-}
 
 export async function render(root) {
   const league = await api('/api/league').catch(() => null);
@@ -79,13 +70,198 @@ export async function render(root) {
       state.drafted = [];
       state.mine = [];
       state.pick = state.slot;
-      state.q = '';
       // Persist the cleared state BEFORE re-rendering: render() reloads from
       // storage, so skipping this would restore the picks just discarded.
       saveState(storeKey);
       render(root);
     },
   }, 'reset draft');
+
+  // ------------------------------------------------------------------
+  // Quick mark
+  //
+  // In a live draft, and especially against autopick, a rival's pick lands
+  // every few seconds. Recording it used to mean typing, waiting out a
+  // debounce, waiting for a server round trip, then finding and clicking a
+  // button — comfortably longer than the gap between picks, so the board fell
+  // behind and started recommending players who were already gone.
+  //
+  // The whole pool is fetched once and searched in the browser, so results are
+  // instant, and the keyboard alone can record a pick: type a few letters and
+  // press Enter. The hands never leave the keys and nothing waits on the
+  // network before the next name can be typed.
+  // ------------------------------------------------------------------
+  let pool = [];
+  let matches = [];
+  let cursor = 0;
+  const undoStack = [];
+
+  const norm = (v) => String(v ?? '').toLowerCase().replace(/[^a-z]/g, '');
+
+  const searchInput = h('input', {
+    type: 'text',
+    placeholder: 'type a name, Enter = opp took',
+    title: 'Searches the whole pool instantly.\n'
+      + 'Enter        mark as taken by an opponent\n'
+      + 'Shift+Enter  mark as YOUR pick\n'
+      + '↑ ↓          move through matches\n'
+      + 'Esc          clear',
+    style: { minWidth: '260px' },
+    oninput: runSearch,
+    onkeydown: onSearchKey,
+  });
+
+  const searchResults = h('div', { hidden: true });
+
+  const undoBtn = h('button.btn.sm', {
+    title: 'Undo the last mark (Ctrl+Z). Under a pick clock, a mis-click needs to cost seconds, not a reset.',
+    disabled: '',
+    onclick: undoLast,
+  }, 'undo');
+
+  const pasteBox = h('textarea', {
+    rows: '6',
+    placeholder: 'Paste picks, one player per line — useful when autopick has run ahead of you.',
+    style: { width: '100%', fontFamily: 'inherit', fontSize: '13px' },
+  });
+  const pasteReport = h('div.hint');
+  const pastePanel = h('div.card.tight.mb', { hidden: true },
+    pasteBox,
+    h('div.row-flex', { style: { marginTop: '8px' } },
+      h('button.btn.sm.primary', { onclick: () => applyPaste(false) }, 'mark all as taken'),
+      h('button.btn.sm', { onclick: () => applyPaste(true) }, 'mark all as MY picks'),
+      h('button.btn.sm', { onclick: () => { pastePanel.hidden = true; } }, 'close')),
+    pasteReport
+  );
+  const pasteBtn = h('button.btn.sm', {
+    title: 'Catch up in bulk by pasting a list of names.',
+    onclick: () => {
+      pastePanel.hidden = !pastePanel.hidden;
+      if (!pastePanel.hidden) pasteBox.focus();
+    },
+  }, 'paste picks');
+
+  function runSearch() {
+    const q = norm(searchInput.value);
+    matches = [];
+    cursor = 0;
+    if (q.length >= 2) {
+      const taken = new Set(state.drafted);
+      for (const p of pool) {
+        if (taken.has(p.i)) continue;
+        if (norm(p.n).includes(q)) {
+          matches.push(p);
+          if (matches.length >= 8) break;   // pool is ADP-sorted, so these are the draftable ones
+        }
+      }
+    }
+    renderMatches();
+  }
+
+  function renderMatches() {
+    if (!matches.length) {
+      searchResults.hidden = true;
+      searchResults.replaceChildren();
+      return;
+    }
+    searchResults.hidden = false;
+    searchResults.replaceChildren(
+      h('div.card.tight.mb',
+        h('div.xs.mute', { style: { marginBottom: '6px' } },
+          'ENTER = OPP TOOK   ·   SHIFT+ENTER = I TOOK   ·   \u2191\u2193 TO MOVE'),
+        ...matches.map((p, i) => h('div.row-flex', {
+          style: {
+            padding: '4px 6px',
+            borderRadius: '4px',
+            background: i === cursor ? 'rgba(120,170,255,0.16)' : 'transparent',
+            cursor: 'pointer',
+          },
+          onclick: () => mark(p, false),
+        },
+        posEl(p.p),
+        h('span.pname', p.n),
+        h('span.pmeta', p.t || ''),
+        h('span.xs.mute', p.a != null ? `ADP ${Math.round(p.a)}` : 'unranked'),
+        i === cursor ? h('span.xs.good', { style: { marginLeft: 'auto' } }, '\u21b5 opp took') : null
+        ))
+      )
+    );
+  }
+
+  function onSearchKey(e) {
+    if (e.key === 'Escape') { searchInput.value = ''; runSearch(); return; }
+    if (!matches.length) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); cursor = (cursor + 1) % matches.length; renderMatches(); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); cursor = (cursor - 1 + matches.length) % matches.length; renderMatches(); return; }
+    if (e.key === 'Enter') { e.preventDefault(); mark(matches[cursor], e.shiftKey); }
+  }
+
+  /** Record one pick. Clears and refocuses immediately so the next name can be typed. */
+  function mark(player, isMine) {
+    if (!player) return;
+    state.drafted.push(player.i);
+    if (isMine) state.mine.push(player.i);
+    state.pick += 1;
+    undoStack.push({ id: player.i, isMine, name: player.n });
+    undoBtn.disabled = null;
+    undoBtn.textContent = `undo ${player.n.split(' ').slice(-1)[0]}`;
+    searchInput.value = '';
+    matches = [];
+    renderMatches();
+    searchInput.focus();     // stay on the keyboard for the next pick
+    refresh();
+  }
+
+  function undoLast() {
+    const last = undoStack.pop();
+    if (!last) return;
+    const di = state.drafted.lastIndexOf(last.id);
+    if (di >= 0) state.drafted.splice(di, 1);
+    if (last.isMine) {
+      const mi = state.mine.lastIndexOf(last.id);
+      if (mi >= 0) state.mine.splice(mi, 1);
+    }
+    state.pick = Math.max(1, state.pick - 1);
+    const next = undoStack[undoStack.length - 1];
+    undoBtn.textContent = next ? `undo ${next.name.split(' ').slice(-1)[0]}` : 'undo';
+    if (!next) undoBtn.disabled = '';
+    refresh();
+  }
+
+  function applyPaste(asMine) {
+    const lines = pasteBox.value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const taken = new Set(state.drafted);
+    const hit = [];
+    const missed = [];
+    for (const line of lines) {
+      // Tolerate "12. Bijan Robinson RB ATL" and similar pasted formats.
+      const q = norm(line.replace(/^[\d.\s]+/, ''));
+      if (q.length < 3) { missed.push(line); continue; }
+      const found = pool.find((p) => !taken.has(p.i) && norm(p.n).includes(q))
+        ?? pool.find((p) => !taken.has(p.i) && q.includes(norm(p.n)));
+      if (!found) { missed.push(line); continue; }
+      taken.add(found.i);
+      state.drafted.push(found.i);
+      if (asMine) state.mine.push(found.i);
+      state.pick += 1;
+      hit.push(found.n);
+    }
+    pasteReport.replaceChildren(
+      h('div', `Marked ${hit.length}${asMine ? ' as your picks' : ' as taken'}.`),
+      missed.length
+        ? h('div.warnc', `Not matched (${missed.length}): ${missed.slice(0, 8).join(', ')}${missed.length > 8 ? ' …' : ''}`)
+        : null
+    );
+    pasteBox.value = '';
+    refresh();
+  }
+
+  // Ctrl/Cmd+Z anywhere on the page, and "/" to jump to the search box.
+  const onKey = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoLast(); return; }
+    if (e.key === '/' && document.activeElement !== searchInput) { e.preventDefault(); searchInput.focus(); }
+  };
+  document.addEventListener('keydown', onKey);
 
   const controls = h('div.row-flex.mb',
     h('label.small.mute', 'Draft slot'),
@@ -108,14 +284,9 @@ export async function render(root) {
       onchange: (e) => { state.pos = e.target.value; refresh(); },
     }, ...['ALL', 'QB', 'RB', 'WR', 'TE', 'K', 'DEF'].map((p) =>
       h('option', { value: p, selected: state.pos === p ? '' : null }, p === 'ALL' ? 'all positions' : p))),
-    h('input', {
-      type: 'text',
-      placeholder: 'find any player…',
-      value: state.q,
-      title: 'Searches the ENTIRE pool, not just the board — use this when a rival takes someone outside the top 20',
-      style: { minWidth: '220px' },
-      oninput: (e) => { state.q = e.target.value; debounceSearch(refresh); },
-    }),
+    searchInput,
+    undoBtn,
+    pasteBtn,
     resetBtn
   );
 
@@ -129,8 +300,17 @@ export async function render(root) {
       )
     ),
     controls,
+    searchResults,
+    pastePanel,
     body
   );
+
+  // Fetch the searchable pool once. The board still decides value; this only
+  // has to be enough to FIND a player, so it can be loaded up front and reused
+  // for the whole draft.
+  api('/api/draft/pool')
+    .then((d) => { pool = d.players ?? []; searchInput.placeholder = `search ${d.count} players — Enter = opp took`; })
+    .catch(() => { searchInput.placeholder = 'search unavailable — use the board buttons'; });
 
   async function refresh() {
     // Every control and every mark routes through here, so this is the one
@@ -149,7 +329,6 @@ export async function render(root) {
       });
       if (state.drafted.length) params.set('drafted', state.drafted.join(','));
       if (state.mine.length) params.set('mine', state.mine.join(','));
-      if (state.q.trim().length >= 2) params.set('q', state.q.trim());
       if (state.pos && state.pos !== 'ALL') params.set('pos', state.pos);
       const d = await api(`/api/draft/board?${params}`);
       body.replaceChildren(board(d, numTeams, refresh));
@@ -191,42 +370,6 @@ function board(d, numTeams, refresh) {
         )
       ),
       h('div.mt-s', ...top.reasons.map((r) => h('div.small.dim', `· ${r}`)))
-    ) : null,
-
-    d.matches?.length ? frag(
-      h('div.section-head',
-        h('h3', `Search results (${d.matches.length})`),
-        h('span.note', `searched all ${d.poolSize} available players`)),
-      h('div.card.tight',
-        table(
-          ['Player', { label: 'Tier', num: true }, { label: 'Proj', num: true },
-            { label: 'VOR', num: true }, { label: 'ADP', num: true }, ''],
-          d.matches.map((p) => h('tr',
-            h('td', h('div.row-flex', posEl(p.pos), h('span.pname', p.name),
-              h('span.xs.mute', `${p.pos}${p.posRank ?? ''}`),
-              h('span.pmeta', p.nfl_team ?? ''), statusBadge(p.status))),
-            h('td.num.mute', p.tier),
-            h('td.num', n1(p.mean)),
-            h('td.num', { class: p.vor > 0 ? 'good' : 'mute' }, n1(p.vor)),
-            h('td.num.mute', p.adp != null ? n1(p.adp) : '—'),
-            h('td.right', h('div.row-flex', { style: { justifyContent: 'flex-end' } },
-              h('button.btn.sm.primary', {
-                onclick: () => {
-                  state.drafted.push(p.player_id);
-                  state.mine.push(p.player_id);
-                  state.pick += 1; state.q = ''; refresh();
-                },
-              }, 'I took'),
-              h('button.btn.sm', {
-                onclick: () => {
-                  state.drafted.push(p.player_id);
-                  state.pick += 1; state.q = ''; refresh();
-                },
-              }, 'opp took')
-            ))
-          ))
-        )
-      )
     ) : null,
 
     h('div.section-head', h('h3', 'Board'), h('span.note', 'VONA = value that disappears at this position before your next pick')),

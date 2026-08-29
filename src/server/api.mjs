@@ -332,6 +332,38 @@ export function buildApi() {
     };
   });
 
+  /**
+   * The whole draftable pool, small enough to search in the browser.
+   *
+   * Marking an opponent's pick previously cost a debounce plus a server round
+   * trip per keystroke batch, which is far too slow when picks land every few
+   * seconds — and a draft nobody can keep up with marking is a draft the board
+   * is wrong about. Sent once, filtered locally, so search is instantaneous.
+   *
+   * Deliberately only the fields needed to FIND a player. Everything used to
+   * value one still comes from the board endpoint, which knows what has already
+   * been taken.
+   */
+  r.get('/api/draft/pool', ({ query }) => {
+    const league = requireLeague(query);
+    const season = league.season;
+    const adp = new Map(
+      all('SELECT player_id, adp FROM adp WHERE season = ?', [season]).map((r) => [r.player_id, r.adp])
+    );
+    const players = all('SELECT player_id, name, pos, nfl_team FROM players')
+      .map((p) => ({
+        i: p.player_id,
+        n: p.name,
+        p: p.pos,
+        t: p.nfl_team ?? '',
+        a: adp.get(p.player_id) ?? null,
+      }))
+      // Ranked players first, so a two-letter search surfaces someone
+      // draftable rather than the alphabetically luckiest practice-squad body.
+      .sort((x, y) => (x.a ?? 1e9) - (y.a ?? 1e9) || x.n.localeCompare(y.n));
+    return { season, count: players.length, players };
+  });
+
   r.get('/api/draft/tiers', ({ query }) => {
     const league = requireLeague(query);
     const pos = query.pos || null;
