@@ -494,3 +494,86 @@ export async function leagueMatchups(leagueId, week) {
 }
 
 export { SLEEPER_SLOTS };
+
+// ---------------------------------------------------------------------------
+// Drafts
+// ---------------------------------------------------------------------------
+
+/**
+ * Every draft attached to a league (most have one; dynasty leagues accumulate).
+ */
+export async function leagueDrafts(leagueId) {
+  // request, not getJson, for the same reason league() uses it: "no drafts" and
+  // "could not connect" both arrive as an empty result, and reporting a league
+  // as undrafted when the network refused the call sends the operator looking
+  // in entirely the wrong place.
+  const r = await request(`${BASE}/league/${leagueId}/drafts`, { source: 'sleeper', cache: true, maxAgeMs: 3e5, json: true });
+  if (!r.ok) return { error: true, status: r.status, reason: r.status === 0 ? 'unreachable' : 'http-error', detail: r.error ?? null };
+  const j = r.json;
+  return Array.isArray(j) ? j.map((d) => ({
+    draft_id: String(d.draft_id),
+    status: d.status,                      // pre_draft | drafting | complete
+    type: d.type,                          // snake | linear | auction
+    season: Number(d.season),
+    startTime: d.start_time ?? null,
+  })) : [];
+}
+
+/**
+ * A draft's shape and seating.
+ *
+ * `draft_order` maps a user id to the SEAT they picked from, which is the one
+ * thing the live board cannot work out for itself and which the Yahoo league
+ * had to be told by hand. Auction drafts are reported honestly rather than
+ * treated as a snake — the pick order of an auction means nothing, and a board
+ * that assumed otherwise would be confidently wrong all night.
+ */
+export async function draft(draftId) {
+  const j = await getJson(`${BASE}/draft/${draftId}`, { source: 'sleeper', cache: true, maxAgeMs: 6e4 });
+  if (!j?.draft_id) return null;
+  return {
+    draft_id: String(j.draft_id),
+    league_id: j.league_id ? String(j.league_id) : null,
+    status: j.status,
+    type: j.type,
+    isSnake: j.type === 'snake',
+    isAuction: j.type === 'auction',
+    rounds: Number(j.settings?.rounds ?? 0),
+    teams: Number(j.settings?.teams ?? j.settings?.slots_per_round ?? 0),
+    pickTimerSec: Number(j.settings?.pick_timer ?? 0),
+    // user_id -> seat (1-indexed)
+    draftOrder: j.draft_order ?? null,
+    // seat -> roster_id
+    slotToRoster: j.slot_to_roster_id ?? null,
+    startTime: j.start_time ?? null,
+    lastPicked: j.last_picked ?? null,
+  };
+}
+
+/**
+ * Picks made so far, in order.
+ *
+ * This is what removes the entire manual marking step the Yahoo draft needed:
+ * a live draft can be read rather than transcribed under a thirty-second clock.
+ */
+export async function draftPicks(draftId) {
+  const j = await getJson(`${BASE}/draft/${draftId}/picks`, {
+    source: 'sleeper',
+    // A live draft moves every few seconds, so this must not be served stale.
+    cache: false, maxAgeMs: 0, timeoutMs: 15000,
+  });
+  if (!Array.isArray(j)) return null;
+  return j
+    .filter((p) => p?.player_id)
+    .map((p) => ({
+      pick: Number(p.pick_no),
+      round: Number(p.round),
+      seat: Number(p.draft_slot),
+      sleeperId: String(p.player_id),
+      pickedBy: p.picked_by ? String(p.picked_by) : null,
+      rosterId: p.roster_id != null ? Number(p.roster_id) : null,
+      // Auction only.
+      amount: p.metadata?.amount != null ? Number(p.metadata.amount) : null,
+    }))
+    .sort((a, b) => a.pick - b.pick);
+}

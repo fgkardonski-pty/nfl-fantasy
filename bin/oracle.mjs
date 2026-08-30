@@ -18,7 +18,7 @@ import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextContestedPick } from '../src/engine/draft.mjs';
 import { uncoveredScoringRules } from '../src/engine/statline.mjs';
-import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly, importScheduleFromSleeper, importSleeperLeague } from '../src/realdata.mjs';
+import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly, importScheduleFromSleeper, importSleeperLeague, syncSleeperDraft } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -262,7 +262,33 @@ const COMMANDS = {
       out(`  ${c.grey}or on the command line with ${c.cyan}--league ${r.league_key}${c.reset}${c.grey}.${c.reset}`);
       return;
     }
-    out(`${c.red}Unknown sleeper action "${sub ?? ''}". Try: league --id <id> [--user <name>]${c.reset}`);
+    if (sub === 'draft') {
+      const id = opts.id ?? meta.get('sleeper_league_id');
+      if (!id) { out(`${c.red}No league id. Run ${c.cyan}sleeper league --id <id>${c.reset}${c.red} first.${c.reset}`); process.exit(1); }
+      const r = await syncSleeperDraft(String(id), { username: opts.user ?? meta.get('sleeper_username') });
+      if (!r.ok) {
+        out(`${c.red}\u2717${c.reset} ${r.note}`);
+        if (r.detail) out(`  ${c.grey}${r.detail}${c.reset}`);
+        return;
+      }
+
+      rule(`SLEEPER DRAFT ${r.draftId} — ${r.status}`);
+      out(`  format   : ${c.bold}${r.type}${c.reset}${r.isAuction ? `  ${c.yellow}(auction — pick order carries no meaning)${c.reset}` : ''}`);
+      out(`  teams    : ${r.teams} · rounds ${r.rounds}${r.pickTimerSec ? ` · ${r.pickTimerSec}s per pick` : ''}`);
+      out(`  your seat: ${r.mySeat != null ? `${c.green}${c.bold}${r.mySeat}${c.reset}` : `${c.yellow}unknown — pass --user <sleeper username>${c.reset}`}`);
+      out(`  picks    : ${r.made} made${r.unknownPlayers ? `, ${r.unknownPlayers} not in the local pool` : ''}`);
+      if (r.mine.length) out(`  yours    : ${r.mine.length}`);
+
+      if (r.status === 'pre_draft') {
+        out(`\n  ${c.grey}The draft has not started. Everything above is already known, so the${c.reset}`);
+        out(`  ${c.grey}board can be opened now and will fill itself in as picks are made.${c.reset}`);
+      }
+      if (r.mySeat != null && !r.isAuction) {
+        out(`\n  ${c.cyan}node bin/oracle.mjs draft --slot ${r.mySeat} --league sleeper.l.${id}${c.reset}`);
+      }
+      return;
+    }
+    out(`${c.red}Unknown sleeper action "${sub ?? ''}". Try: league --id <id> [--user <name>] | draft${c.reset}`);
     process.exit(1);
   },
 
@@ -997,6 +1023,7 @@ ${c.bold}LEAGUES${c.reset}
   ${c.cyan}sleeper league${c.reset} --id <id> [--user <name>]
                           import a Sleeper league (settings, rosters, matchups);
                           re-run with no --id to re-sync the remembered league
+  ${c.cyan}sleeper draft${c.reset}           read the live draft: format, your seat, every pick so far
   ${c.cyan}myteam${c.reset} [--team <name>]  show, or set, which team is yours in a league
 
 ${c.bold}DATA${c.reset}

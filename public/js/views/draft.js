@@ -487,6 +487,82 @@ export async function render(root) {
   let refreshSeq = 0;
   let painted = false;
 
+  // ---- Live sync (Sleeper leagues only) -----------------------------------
+  //
+  // A Yahoo draft has no public feed, so every pick has to be marked by hand
+  // under the clock. Sleeper publishes the picks, which removes that step
+  // entirely: the board reads the draft rather than transcribing it.
+  //
+  // Sleeper's copy is authoritative and simply REPLACES local state. Merging
+  // the two would be the dangerous choice — a hand-marked pick that Sleeper
+  // does not have is a mistake, not information, and keeping it would shift
+  // every later pick by one seat.
+  const isSleeper = (league?.league_key ?? '').startsWith('sleeper.');
+  let syncTimer = null;
+  let syncing = false;
+
+  async function syncFromSleeper({ quiet = false } = {}) {
+    if (syncing) return;
+    syncing = true;
+    if (!quiet) syncBtn.textContent = 'syncing…';
+    try {
+      const d = await api('/api/draft/sync');
+      const changed = d.drafted.length !== state.drafted.length;
+      state.drafted = d.drafted;
+      state.mine = d.mine;
+      if (d.mySeat != null) state.slot = d.mySeat;
+      if (d.rounds) state.rounds = d.rounds;
+      // Our next pick, from what has actually happened rather than a count we
+      // maintained ourselves.
+      state.pick = d.made + 1;
+      syncBtn.textContent = `synced · ${d.made} picks`;
+      syncNote.textContent = d.status === 'drafting'
+        ? `live · seat ${d.mySeat ?? '?'} · ${d.type}`
+        : `${d.status} · seat ${d.mySeat ?? '?'} · ${d.type}`;
+      if (changed || !quiet) await refresh();
+    } catch (err) {
+      syncBtn.textContent = 'sync picks';
+      syncNote.textContent = err?.message ?? 'sync failed';
+    } finally {
+      syncing = false;
+      if (!quiet) setTimeout(() => { syncBtn.textContent = 'sync picks'; }, 2500);
+    }
+  }
+
+  const syncNote = h('span.note');
+  const syncBtn = h('button.btn.sm', {
+    title: 'Read the live draft from Sleeper. Replaces the local pick list with Sleeper\u2019s, which is authoritative.',
+    onclick: () => syncFromSleeper(),
+  }, 'sync picks');
+
+  const autoBox = h('input', { type: 'checkbox', id: 'auto-sync' });
+  const autoSync = h('label.small.mute', { for: 'auto-sync', title: 'Poll Sleeper every few seconds while the draft runs.' },
+    autoBox, ' auto');
+  // Placed into the toolbar here rather than declared with it, because the
+  // handlers close over refresh(), which is defined further down. Only shown
+  // for a league that actually has a feed — offering a sync button on a Yahoo
+  // draft would promise something that does not exist.
+  if (isSleeper) toolbar.append(syncBtn, autoSync, syncNote);
+
+  autoBox.addEventListener('change', () => {
+    clearInterval(syncTimer);
+    syncTimer = null;
+    if (autoBox.checked) {
+      // Five seconds: fast enough to keep up with a thirty-second clock,
+      // slow enough not to hammer a free public API all night.
+      syncTimer = setInterval(() => syncFromSleeper({ quiet: true }), 5000);
+      syncFromSleeper({ quiet: true });
+    }
+  });
+
+  // Leaving the view must stop the poll. Without this, switching to another
+  // page — or to the other league — leaves a timer hitting a public API every
+  // five seconds for the rest of the session.
+  window.addEventListener('hashchange', () => {
+    clearInterval(syncTimer);
+    syncTimer = null;
+  }, { once: true });
+
   async function refresh() {
     // Every control and every mark routes through here, so this is the one
     // place a save has to happen for none to be missed.

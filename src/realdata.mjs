@@ -1041,3 +1041,85 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
     scoringRules: Object.keys(scoring).length,
   };
 }
+
+/**
+ * Read a Sleeper draft: its shape, our seat, and every pick made so far.
+ *
+ * This replaces the two things the Yahoo draft had to be told by hand — which
+ * seat we are in, and who has been taken — with two things Sleeper already
+ * knows. Under a thirty-second clock that difference is the whole game: the
+ * board can be read rather than transcribed.
+ *
+ * Returns picks as local player ids so the caller never touches Sleeper ids.
+ */
+export async function syncSleeperDraft(leagueId, { username = null, draftId = null } = {}) {
+  let id = draftId;
+  let info = null;
+
+  if (!id) {
+    const drafts = await sleeper.leagueDrafts(leagueId);
+    if (drafts?.error) {
+      return {
+        ok: false, reason: drafts.reason,
+        note: drafts.reason === 'unreachable'
+          ? 'Could not reach api.sleeper.app — the request never completed. This is a network problem, not a missing draft.'
+          : `Sleeper refused the draft list for league ${leagueId}${drafts.status ? ` (HTTP ${drafts.status})` : ''}.`,
+        detail: drafts.detail ?? null,
+      };
+    }
+    if (!drafts.length) return { ok: false, reason: 'no-draft', note: `League ${leagueId} has no draft attached yet.` };
+    // The one in progress, else the most recent.
+    info = drafts.find((d) => d.status === 'drafting') ?? drafts[0];
+    id = info.draft_id;
+  }
+
+  const d = await sleeper.draft(id);
+  if (!d) return { ok: false, note: `Sleeper returned nothing for draft ${id}.` };
+
+  // Our seat, from the username. Without it the board cannot know whose turn
+  // it is, and guessing would misprice every pick from the first round on.
+  let mySeat = null;
+  let myUserId = null;
+  if (username) {
+    const u = await sleeper.user(username).catch(() => null);
+    if (u) {
+      myUserId = u.user_id;
+      const seat = d.draftOrder?.[u.user_id];
+      if (seat != null) mySeat = Number(seat);
+    }
+  }
+
+  const picks = await sleeper.draftPicks(id);
+  const bySleeper = new Map(
+    all('SELECT player_id, sleeper_id FROM players WHERE sleeper_id IS NOT NULL')
+      .map((p) => [String(p.sleeper_id), p.player_id])
+  );
+
+  const mapped = [];
+  const unknown = [];
+  for (const p of picks ?? []) {
+    const local = bySleeper.get(p.sleeperId);
+    if (!local) { unknown.push(p.sleeperId); continue; }
+    mapped.push({ ...p, player_id: local, isMine: myUserId != null && p.pickedBy === myUserId });
+  }
+
+  meta.set(`sleeper_draft:${leagueId}`, id);
+  return {
+    ok: true,
+    draftId: id,
+    status: d.status,
+    type: d.type,
+    isSnake: d.isSnake,
+    isAuction: d.isAuction,
+    rounds: d.rounds,
+    teams: d.teams,
+    pickTimerSec: d.pickTimerSec,
+    mySeat,
+    picks: mapped,
+    made: mapped.length,
+    unknownPlayers: unknown.length,
+    // Everything the live board needs, in the order it needs it.
+    drafted: mapped.map((p) => p.player_id),
+    mine: mapped.filter((p) => p.isMine).map((p) => p.player_id),
+  };
+}

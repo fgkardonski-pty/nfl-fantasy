@@ -21,6 +21,7 @@ import { computeVor, tierize, tierSummary } from '../engine/vor.mjs';
 import { evaluateOffer } from '../engine/trades.mjs';
 import { optimalLineup, lineupMarginals } from '../engine/optimizer.mjs';
 import { positionalNeed } from '../engine/opponent.mjs';
+import { syncSleeperDraft } from '../realdata.mjs';
 import { logger } from '../util/log.mjs';
 
 const log = logger('api');
@@ -536,6 +537,26 @@ export function buildApi() {
       week,
       opponents,
     };
+  });
+
+  /**
+   * Live draft state, read from Sleeper.
+   *
+   * The Yahoo draft needed every pick typed in under a thirty-second clock.
+   * For a Sleeper league that whole step disappears: the board asks who has
+   * been taken and gets an authoritative answer, including which picks are
+   * ours and which seat we hold.
+   */
+  r.get('/api/draft/sync', async ({ query }) => {
+    const league = requireLeague(query);
+    const id = league.league_id;
+    if (!league.league_key.startsWith('sleeper.')) {
+      throw httpError(400, 'Live sync is only available for Sleeper leagues.',
+        'A Yahoo draft has no public feed, so picks are marked by hand in the board.');
+    }
+    const r_ = await syncSleeperDraft(id, { username: meta.get('sleeper_username') });
+    if (!r_.ok) throw httpError(502, r_.note);
+    return r_;
   });
 
   r.get('/api/draft/tiers', ({ query }) => {
