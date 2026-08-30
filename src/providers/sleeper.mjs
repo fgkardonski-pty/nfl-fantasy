@@ -8,7 +8,7 @@
  *
  * https://docs.sleeper.com — no authentication required.
  */
-import { getJson } from '../util/http.mjs';
+import { getJson, request } from '../util/http.mjs';
 import { upsertMany, get } from '../db/index.mjs';
 import { logger } from '../util/log.mjs';
 
@@ -376,8 +376,21 @@ export async function user(username) {
 }
 
 export async function league(leagueId) {
-  const j = await getJson(`${BASE}/league/${leagueId}`, { source: 'sleeper', cache: true, maxAgeMs: 36e5 });
-  if (!j?.league_id) return null;
+  // Uses request rather than getJson so a league that does not exist can be
+  // told apart from a network that will not connect. Both come back as "no
+  // data", and reporting the wrong one sends the operator to check an id that
+  // was correct all along.
+  const r = await request(`${BASE}/league/${leagueId}`, { source: 'sleeper', cache: true, maxAgeMs: 36e5, json: true });
+  const j = r.ok ? r.json : null;
+  if (!j?.league_id) {
+    return {
+      error: true,
+      status: r.status,
+      // Status 0 means the request never completed at all.
+      reason: r.status === 0 ? 'unreachable' : r.status === 404 ? 'not-found' : r.ok ? 'empty' : 'http-error',
+      detail: r.error ?? null,
+    };
+  }
 
   const counts = new Map();
   for (const code of j.roster_positions ?? []) {

@@ -7,7 +7,7 @@
  */
 import process from 'node:process';
 import config from '../src/config.mjs';
-import { getDb, closeDb, all, get, meta } from '../src/db/index.mjs';
+import { getDb, closeDb, all, get, run, meta } from '../src/db/index.mjs';
 import * as S from '../src/service.mjs';
 import { generateDemoLeague } from '../src/demo.mjs';
 import { startServer } from '../src/server/index.mjs';
@@ -216,17 +216,23 @@ const COMMANDS = {
     }
   },
 
-  async sleeper(opts) {
-    const sub = opts._[0];
+  async sleeper(opts, sub, positional = []) {
     if (sub === 'league') {
-      const id = opts.id ?? opts._[1];
+      const remembered = meta.get('sleeper_league_id');
+      const id = opts.id ?? positional[1] ?? remembered;
       if (!id) {
         out(`${c.red}Usage:${c.reset} node bin/oracle.mjs sleeper league --id <league_id> [--user <username>]`);
         out(`${c.grey}The league id is in the Sleeper URL: sleeper.com/leagues/<id>/team${c.reset}`);
         process.exit(1);
       }
-      const r = await importSleeperLeague(String(id), { username: opts.user ?? null });
-      if (!r.ok) { out(`${c.red}\u2717${c.reset} ${r.note}`); return; }
+      if (!opts.id && remembered) out(`${c.grey}re-syncing remembered league ${remembered}${c.reset}`);
+      const user = opts.user ?? meta.get('sleeper_username') ?? null;
+      const r = await importSleeperLeague(String(id), { username: user });
+      if (!r.ok) {
+        out(`${c.red}\u2717${c.reset} ${r.note}`);
+        if (r.detail) out(`  ${c.grey}${r.detail}${c.reset}`);
+        return;
+      }
 
       out(`${c.green}\u2713${c.reset} ${c.bold}${r.name}${c.reset} (${r.league_key})`);
       out(`  ${r.teams} teams · ${r.rosterSpots} roster spots · ${r.matchups} matchups · week ${r.week}`);
@@ -253,6 +259,29 @@ const COMMANDS = {
     }
     out(`${c.red}Unknown sleeper action "${sub ?? ''}". Try: league --id <id> [--user <name>]${c.reset}`);
     process.exit(1);
+  },
+
+  myteam(opts, sub) {
+    const l = league(opts);
+    const name = opts.team ?? sub;
+    const teams = S.getTeams(l.league_key);
+    if (!name) {
+      rule(`TEAMS IN ${l.name}`);
+      for (const t of teams) {
+        out(`  ${t.is_mine ? c.green + '*' + c.reset : ' '} ${c.white}${pad(t.name, 28)}${c.reset}${c.grey}${t.manager ?? ''}${c.reset}`);
+      }
+      out(`\n  ${c.grey}Set yours: ${c.cyan}node bin/oracle.mjs myteam --team "<name>" --league ${l.league_key}${c.reset}`);
+      return;
+    }
+    const match = teams.find((t) => t.name.toLowerCase() === String(name).toLowerCase());
+    if (!match) {
+      out(`${c.red}No team called "${name}" in ${l.name}.${c.reset} Run ${c.cyan}myteam${c.reset} with no argument to list them.`);
+      process.exit(1);
+    }
+    run('UPDATE teams SET is_mine = 0 WHERE league_key = ?', [l.league_key]);
+    run('UPDATE teams SET is_mine = 1 WHERE league_key = ? AND team_key = ?', [l.league_key, match.team_key]);
+    S.invalidateOutlook();
+    out(`${c.green}\u2713${c.reset} ${c.bold}${match.name}${c.reset} is now your team in ${l.name}.`);
   },
 
   leagues() {
@@ -961,7 +990,9 @@ ${c.bold}DRAFT DAY${c.reset}
 ${c.bold}LEAGUES${c.reset}
   ${c.cyan}leagues${c.reset}                 every league loaded, and which is the default
   ${c.cyan}sleeper league${c.reset} --id <id> [--user <name>]
-                          import a Sleeper league (settings, rosters, matchups)
+                          import a Sleeper league (settings, rosters, matchups);
+                          re-run with no --id to re-sync the remembered league
+  ${c.cyan}myteam${c.reset} [--team <name>]  show, or set, which team is yours in a league
 
 ${c.bold}DATA${c.reset}
   ${c.cyan}yahoo status${c.reset}            connection state and setup instructions

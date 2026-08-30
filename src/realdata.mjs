@@ -893,7 +893,19 @@ export function scoringFromSleeper(settings = {}) {
  */
 export async function importSleeperLeague(leagueId, { week = null, username = null } = {}) {
   const meta_ = await sleeper.league(leagueId);
-  if (!meta_) return { ok: false, note: `Sleeper returned nothing for league ${leagueId}. Check the id.` };
+  if (!meta_ || meta_.error) {
+    const note = {
+      unreachable: 'Could not reach api.sleeper.app at all — the request never completed. This is a network or firewall problem, not a bad league id.',
+      'not-found': `Sleeper has no league ${leagueId}. Check the id in the URL: sleeper.com/leagues/<id>/team`,
+      empty: `Sleeper answered for league ${leagueId} but returned nothing usable.`,
+      // Sleeper's public API needs no authentication, so a 403 almost never
+      // comes from Sleeper itself — it is a proxy or firewall in between.
+      'http-error': meta_?.status === 403
+        ? `HTTP 403 for league ${leagueId}. Sleeper's public API needs no key, so a 403 almost always comes from a proxy or firewall between this machine and the internet, not from Sleeper.`
+        : `Sleeper refused the request for league ${leagueId}${meta_?.status ? ` (HTTP ${meta_.status})` : ''}.`,
+    }[meta_?.reason] ?? `Sleeper returned nothing for league ${leagueId}.`;
+    return { ok: false, reason: meta_?.reason ?? 'unknown', note, detail: meta_?.detail ?? null };
+  }
 
   const [users, rosters] = await Promise.all([
     sleeper.leagueUsers(leagueId),
@@ -1008,6 +1020,11 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
   if (matchupRows.length) {
     upsertMany('matchups', Object.keys(matchupRows[0]), matchupRows, ['league_key', 'week', 'team_key']);
   }
+
+  // Remembered so a weekly re-sync is one word rather than a copied id, and so
+  // the username used to identify our roster does not have to be retyped.
+  meta.set('sleeper_league_id', String(meta_.league_id));
+  if (username) meta.set('sleeper_username', String(username));
 
   log.info(`sleeper league ${meta_.name}: ${teamRows.length} teams, ${rosterRows.length} roster spots, ${matchupRows.length / 2} matchups`);
   return {
