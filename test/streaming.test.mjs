@@ -65,6 +65,35 @@ test('a ranking is refused rather than guessed when the schedule is synthetic', 
   assert.equal(r.reason, 'synthetic-schedule');
 });
 
+test('an untagged slate is refused rather than trusted', () => {
+  // Rows written before source tracking existed carry no provenance. If the
+  // operator ever ran the demo, those rows are invented fixtures wearing real
+  // team abbreviations. Giving them the benefit of the doubt is exactly how a
+  // real defense ends up ranked against a game that never existed.
+  const r = rankStreamers({
+    defenses: [defense('ARI'), defense('SF')],
+    games: [game('ARI', 'SF', 21, 24, { source: null })],
+    scoring: SCORING,
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'unverified-schedule');
+});
+
+test('a real slate is ranked even when demo rows sit alongside it', () => {
+  const r = rankStreamers({
+    defenses: [defense('ARI'), defense('SF'), defense('NYJ'), defense('BUF')],
+    games: [
+      game('ARI', 'SF', 27, 26),
+      game('NYJ', 'BUF', 17, 14, { source: 'demo' }),   // stale, must be ignored
+    ],
+    scoring: SCORING,
+  });
+  assert.equal(r.ok, true);
+  // NYJ would have ranked first on the demo row's soft matchup. It must not
+  // appear at all: a leftover fixture cannot promote a defense.
+  assert.deepEqual(r.best.map((x) => x.nfl_team).sort(), ['ARI', 'SF']);
+});
+
 test('a ranking is refused when the slate carries no betting lines', () => {
   const r = rankStreamers({
     defenses: [defense('ARI')],

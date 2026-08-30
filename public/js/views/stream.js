@@ -99,6 +99,7 @@ function refusal(d) {
   const fix = {
     'no-schedule': 'Load this week’s NFL games, with betting lines.',
     'synthetic-schedule': 'The games loaded for this week are demo fixtures. Run a clean real-data setup, then import a live slate.',
+    'unverified-schedule': 'These games predate provenance tracking, so they cannot be confirmed real. Re-import this week’s slate with odds to replace them.',
     'no-lines': 'The games are loaded but carry no implied team totals. Import odds.',
   }[d.reason] ?? 'Load a real slate for this week.';
 

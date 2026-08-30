@@ -80,9 +80,10 @@ export function expectedDefenseWeek({ impliedOpponentTotal, scoring, unit = null
  * Rank streaming candidates for a week.
  *
  * Returns `{ ok: false, reason }` rather than a list whenever the inputs cannot
- * support a ranking. The three ways that happens — no schedule, a synthetic
- * schedule, or a schedule with no betting lines — all produce output that looks
- * exactly as authoritative as the real thing, so each is refused explicitly.
+ * support a ranking. The four ways that happens — no schedule, a synthetic
+ * schedule, a schedule of unknown provenance, or one with no betting lines —
+ * all produce output that looks exactly as authoritative as the real thing, so
+ * each is refused explicitly.
  *
  * @param {Object} opts
  * @param {Array}  opts.defenses   [{player_id, name, nfl_team, unit?, rostered?, pctOwned?}]
@@ -99,14 +100,25 @@ export function rankStreamers({
   if (!games.length) {
     return { ok: false, reason: 'no-schedule', note: 'No games are loaded for this week, so there is no matchup to rank on.' };
   }
-  const synthetic = games.filter((g) => g.source && g.source !== 'real');
-  if (synthetic.length === games.length) {
+  // Only a slate explicitly tagged 'real' may be ranked on. An untagged row is
+  // NOT given the benefit of the doubt: rows written before source tracking
+  // existed are untagged, and if the operator ever ran the demo they are
+  // invented fixtures built from real team abbreviations — ARI at WAS with a
+  // plausible spread — which the permissive reading would have ranked real
+  // defenses against without a word. Re-importing odds is a cheap fix; a
+  // confidently wrong Sunday lineup is not.
+  const usable = games.filter((g) => g.source === 'real');
+  if (!usable.length) {
+    const allDemo = games.every((g) => g.source === 'demo');
     return {
-      ok: false, reason: 'synthetic-schedule',
-      note: 'The only games loaded for this week are demo fixtures. Ranking real defenses against invented opponents would look exactly like a real recommendation.',
+      ok: false,
+      reason: allDemo ? 'synthetic-schedule' : 'unverified-schedule',
+      note: allDemo
+        ? 'The only games loaded for this week are demo fixtures. Ranking real defenses against invented opponents would look exactly like a real recommendation.'
+        : 'This week’s games carry no provenance — they predate source tracking, so they may be demo fixtures. Demo fixtures use real team abbreviations and plausible spreads, so they cannot be told apart by eye.',
     };
   }
-  const priced = games.filter((g) => g.implied_home != null && g.implied_away != null);
+  const priced = usable.filter((g) => g.implied_home != null && g.implied_away != null);
   if (!priced.length) {
     return {
       ok: false, reason: 'no-lines',
