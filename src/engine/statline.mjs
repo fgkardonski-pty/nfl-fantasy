@@ -49,11 +49,16 @@ const ANCHORS = {
   // the problem — two touchdowns a game is a career year, not a baseline — and
   // the exaggeration fed straight into draft valuation.
   QB: [
-    { rank: 1,  pass_cmp: 23.5, pass_att: 34.5, pass_yd: 262, pass_td: 1.72, pass_int: 0.55, rush_att: 4.6, rush_yd: 26, rush_td: 0.34 },
-    { rank: 6,  pass_cmp: 22.4, pass_att: 33.5, pass_yd: 246, pass_td: 1.56, pass_int: 0.62, rush_att: 3.2, rush_yd: 17, rush_td: 0.23 },
-    { rank: 12, pass_cmp: 21.2, pass_att: 32.5, pass_yd: 231, pass_td: 1.42, pass_int: 0.70, rush_att: 2.6, rush_yd: 12, rush_td: 0.16 },
-    { rank: 20, pass_cmp: 20.2, pass_att: 31.5, pass_yd: 218, pass_td: 1.30, pass_int: 0.75, rush_att: 2.2, rush_yd:  9, rush_td: 0.12 },
-    { rank: 32, pass_cmp: 18.8, pass_att: 30.0, pass_yd: 200, pass_td: 1.14, pass_int: 0.80, rush_att: 1.9, rush_yd:  7, rush_td: 0.09 },
+    // pass_sacked is here because a league charging a point per sack takes
+    // roughly two points a game off every quarterback, and more off some than
+    // others — the spread runs from about 1.6 for a quick-release passer behind
+    // a good line to 3.0 for one who holds the ball. Absent, the whole category
+    // scored zero and every quarterback was overvalued by the same amount.
+    { rank: 1,  pass_cmp: 23.5, pass_att: 34.5, pass_yd: 262, pass_td: 1.72, pass_int: 0.55, rush_att: 4.6, rush_yd: 26, rush_td: 0.34, pass_sacked: 1.95 },
+    { rank: 6,  pass_cmp: 22.4, pass_att: 33.5, pass_yd: 246, pass_td: 1.56, pass_int: 0.62, rush_att: 3.2, rush_yd: 17, rush_td: 0.23, pass_sacked: 2.10 },
+    { rank: 12, pass_cmp: 21.2, pass_att: 32.5, pass_yd: 231, pass_td: 1.42, pass_int: 0.70, rush_att: 2.6, rush_yd: 12, rush_td: 0.16, pass_sacked: 2.25 },
+    { rank: 20, pass_cmp: 20.2, pass_att: 31.5, pass_yd: 218, pass_td: 1.30, pass_int: 0.75, rush_att: 2.2, rush_yd:  9, rush_td: 0.12, pass_sacked: 2.45 },
+    { rank: 32, pass_cmp: 18.8, pass_att: 30.0, pass_yd: 200, pass_td: 1.14, pass_int: 0.80, rush_att: 1.9, rush_yd:  7, rush_td: 0.09, pass_sacked: 2.70 },
   ],
   RB: [
     { rank: 1,  rush_att: 17.0, rush_yd: 80, rush_td: 0.60, rec: 4.0, rec_yd: 30, rec_td: 0.20 },
@@ -90,11 +95,17 @@ const ANCHORS = {
   // points a game from categories a defense archetype without them reports as
   // zero. Omitting them priced every defense at barely a third of its worth.
   DEF: [
-    { rank: 1,  def_sack: 2.90, def_int: 1.00, def_fum_rec: 0.70, def_td: 0.18, def_safety: 0.05, def_block: 0.05, def_pts_allowed: 17.0, def_ret_yd: 22, def_tfl: 7.4, def_4th_down_stop: 0.62 },
-    { rank: 6,  def_sack: 2.50, def_int: 0.85, def_fum_rec: 0.60, def_td: 0.13, def_safety: 0.04, def_block: 0.04, def_pts_allowed: 20.0, def_ret_yd: 20, def_tfl: 6.8, def_4th_down_stop: 0.55 },
-    { rank: 12, def_sack: 2.20, def_int: 0.72, def_fum_rec: 0.52, def_td: 0.09, def_safety: 0.03, def_block: 0.03, def_pts_allowed: 22.5, def_ret_yd: 18, def_tfl: 6.2, def_4th_down_stop: 0.48 },
-    { rank: 24, def_sack: 1.80, def_int: 0.58, def_fum_rec: 0.42, def_td: 0.06, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 25.5, def_ret_yd: 16, def_tfl: 5.4, def_4th_down_stop: 0.40 },
-    { rank: 32, def_sack: 1.50, def_int: 0.48, def_fum_rec: 0.35, def_td: 0.04, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 28.0, def_ret_yd: 15, def_tfl: 4.8, def_4th_down_stop: 0.34 },
+    // def_yds_allowed matters wherever a league tiers on yardage as well as
+    // points, which is a whole category otherwise scored at zero. The band is
+    // narrow and real: the best defenses give up around 290 a game, the worst
+    // around 380, and almost everyone sits between.
+    // def_ff is separate from def_fum_rec on purpose — forcing a fumble and
+    // recovering it are different events, and several leagues pay for both.
+    { rank: 1,  def_sack: 2.90, def_int: 1.00, def_fum_rec: 0.70, def_ff: 0.85, def_td: 0.18, def_safety: 0.05, def_block: 0.05, def_pts_allowed: 17.0, def_yds_allowed: 291, def_ret_yd: 22, def_tfl: 7.4, def_4th_down_stop: 0.62 },
+    { rank: 6,  def_sack: 2.50, def_int: 0.85, def_fum_rec: 0.60, def_ff: 0.76, def_td: 0.13, def_safety: 0.04, def_block: 0.04, def_pts_allowed: 20.0, def_yds_allowed: 312, def_ret_yd: 20, def_tfl: 6.8, def_4th_down_stop: 0.55 },
+    { rank: 12, def_sack: 2.20, def_int: 0.72, def_fum_rec: 0.52, def_ff: 0.68, def_td: 0.09, def_safety: 0.03, def_block: 0.03, def_pts_allowed: 22.5, def_yds_allowed: 330, def_ret_yd: 18, def_tfl: 6.2, def_4th_down_stop: 0.48 },
+    { rank: 24, def_sack: 1.80, def_int: 0.58, def_fum_rec: 0.42, def_ff: 0.58, def_td: 0.06, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 25.5, def_yds_allowed: 356, def_ret_yd: 16, def_tfl: 5.4, def_4th_down_stop: 0.40 },
+    { rank: 32, def_sack: 1.50, def_int: 0.48, def_fum_rec: 0.35, def_ff: 0.50, def_td: 0.04, def_safety: 0.02, def_block: 0.02, def_pts_allowed: 28.0, def_yds_allowed: 378, def_ret_yd: 15, def_tfl: 4.8, def_4th_down_stop: 0.34 },
   ],
 };
 
@@ -123,6 +134,27 @@ const DERIVED = {
   rec_td_40: (s) => (s.rec_td ?? 0) * 0.20,
   // Interceptions returned for a touchdown against the passer.
   pick_six_thrown: (s) => (s.pass_int ?? 0) * 0.09,
+
+  // Kicking, at the finer granularity some leagues score. Derived rather than
+  // anchored because they are strict subdivisions of fg_50p — a hand-maintained
+  // column would drift out of step with the one it is a share of. Roughly one
+  // fifty-plus make in fourteen travels sixty or more.
+  fg_50_59: (s) => (s.fg_50p ?? 0) * 0.93,
+  fg_60p: (s) => (s.fg_50p ?? 0) * 0.07,
+  // Misses follow from attempts at a league-average conversion rate: kickers
+  // make a little over 84% of field goals and about 96% of extra points.
+  fg_miss: (s) => (s.fg_made ?? 0) * 0.19,
+  pat_miss: (s) => (s.pat_made ?? 0) * 0.042,
+
+  // Return touchdowns. Rare, but some leagues pay heavily for them — twelve
+  // points in one case — so pricing them at zero is not safe just because the
+  // rate is low. Scaled off return yardage, which is the opportunity.
+  def_ret_td: (s) => (s.def_ret_yd ?? 0) * 0.0022,
+  // Special-teams forced fumbles and recoveries, a fraction of the defensive
+  // rate. Kept distinct because leagues score them as separate events.
+  st_ff: (s) => (s.def_ff ?? 0) * 0.16,
+  def_st_ff: (s) => (s.def_ff ?? 0) * 0.16,
+  st_fum_rec: (s) => (s.def_fum_rec ?? 0) * 0.14,
   // Fumbles lost track carries plus receptions.
   fum_lost: (s) => ((s.rush_att ?? 0) + (s.rec ?? 0)) * 0.006,
 };
@@ -363,15 +395,21 @@ export function uncoveredScoringRules(scoring = {}) {
       supplied.get(key).push(pos);
     }
   }
-  // Points allowed is supplied as an average and converted into its buckets, so
-  // the tier keys are covered even though no stat line names them.
-  const TIER_KEYS = new Set(PA_TIERS.map((t) => t.key));
+  // Points and yards allowed are supplied as AVERAGES and converted into their
+  // buckets, so the tier keys are covered even though no stat line names them.
+  // Each family is checked against the average that actually feeds it — pairing
+  // them wrongly would report a whole category as covered when nothing produces
+  // it, which is the exact failure this function exists to catch.
+  const TIERED = [
+    { keys: new Set(PA_TIERS.map((t) => t.key)), fedBy: 'def_pts_allowed' },
+    { keys: new Set(YA_TIERS.map((t) => t.key)), fedBy: 'def_yds_allowed' },
+  ];
 
   const out = [];
   for (const [stat, points] of Object.entries(scoring)) {
     if (typeof points !== 'number' || points === 0) continue;
     if (stat.startsWith('_')) continue;                 // documentation keys
-    if (TIER_KEYS.has(stat) && supplied.has('def_pts_allowed')) continue;
+    if (TIERED.some((t) => t.keys.has(stat) && supplied.has(t.fedBy))) continue;
     if (supplied.has(stat)) continue;
     out.push({ stat, points, positions: [] });
   }

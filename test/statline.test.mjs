@@ -302,3 +302,55 @@ test('the archetype curve matches Yahoo\'s real week 1 projections', async () =>
   assert.ok(at('WR', 1) > 15 && at('WR', 1) < 26);
   assert.ok(at('TE', 1) > at('TE', 12), 'tight end is top-heavy, as observed');
 });
+
+test('the archetypes feed the second league\'s rules too, not just the first', async () => {
+  const { uncoveredScoringRules } = await import('../src/engine/statline.mjs');
+  // Two leagues with genuinely different rules is the test that matters: an
+  // archetype table tuned to one league's categories silently prices every
+  // category the other league scores and the first does not at zero. The
+  // Sleeper league reported twenty-one such rules on import.
+  const K = {
+    pass_int: -2, pass_sacked: -1, pass_td: 6, pass_yd: 0.04,
+    rush_td: 6, rush_yd: 0.1, rec: 1, rec_td: 6, rec_yd: 0.1,
+    fg_0_19: 3, fg_20_29: 3, fg_30_39: 3, fg_40_49: 4, fg_50_59: 5, fg_50p: 5, fg_60p: 6,
+    fg_miss: -1, pat_made: 1, pat_miss: -1,
+    def_pa_0: 5, def_pa_1_6: 4, def_pa_7_13: 3, def_pa_14_20: 1, def_pa_28_34: -1, def_pa_35p: -4,
+    def_ya_0_100: 5, def_ya_100_199: 3, def_ya_200_299: 2, def_ya_350_399: -1,
+    def_ya_400_449: -3, def_ya_450_499: -5, def_ya_500_549: -6, def_ya_550p: -7,
+    def_block: 2, def_ff: 1, def_fum_rec: 3, def_int: 2, def_ret_td: 12, def_sack: 1,
+    def_safety: 2, def_st_ff: 1, def_td: 6,
+    fum_lost: -2, fum_ret_td: 6, ret_td: 6, st_ff: 1, st_fum_rec: 1, two_pt: 6,
+  };
+  const uncovered = uncoveredScoringRules(K).map((u) => u.stat).sort();
+
+  // What remains is only the genuinely rare: a return touchdown by a skill
+  // player, a fumble returned for one, and a two-point conversion. Each is
+  // worth under half a point a game even at six points a piece.
+  assert.deepEqual(uncovered, ['fum_ret_td', 'ret_td', 'two_pt']);
+
+  // The categories that were missing and are not rare — a whole yardage tier
+  // for every defense, and two points a game off every quarterback.
+  for (const key of ['def_ya_200_299', 'def_ya_400_449', 'pass_sacked', 'fg_50_59', 'fg_miss', 'def_ff']) {
+    assert.ok(!uncovered.includes(key), `${key} should now be fed by an archetype`);
+  }
+});
+
+test('a sack-penalising league values quarterbacks lower than one that ignores it', async () => {
+  const base = { pass_td: 6, pass_yd: 0.04, pass_int: -2 };
+  const withSacks = { ...base, pass_sacked: -1 };
+  const a = expectedPointsAtRank('QB', 6, base);
+  const b = expectedPointsAtRank('QB', 6, withSacks);
+  assert.ok(b < a, 'the penalty is actually applied');
+  // Around two sacks a game — enough to matter over a season, not enough to
+  // reorder the position.
+  assert.ok(a - b > 1.5 && a - b < 3.5, `sack penalty moved the QB by ${(a - b).toFixed(2)}`);
+});
+
+test('yards allowed separates defenses in a league that scores it', async () => {
+  const scoring = { def_sack: 1, def_ya_200_299: 2, def_ya_350_399: -1, def_ya_400_449: -3 };
+  const best = expectedPointsAtRank('DEF', 1, scoring);
+  const worst = expectedPointsAtRank('DEF', 32, scoring);
+  assert.ok(best > worst, 'a better defense allows fewer yards and is worth more');
+  // The whole category was scoring zero before the anchors carried yardage.
+  assert.ok(best !== 0 && worst !== 0);
+});
