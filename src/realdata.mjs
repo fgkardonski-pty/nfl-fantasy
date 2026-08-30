@@ -691,6 +691,10 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
   }
 
   // Claims first, so a player on two teams is visible before anything is written.
+  // Players carrying a consensus rank — the draftable universe, used to break
+  // ties between real starters and their same-named practice-squad namesakes.
+  const rankedIds = new Set(all('SELECT DISTINCT player_id FROM adp').map((r) => r.player_id));
+
   const claims = new Map();
   const unknownTeams = [];
   for (const [teamName, names] of Object.entries(rostersByTeam ?? {})) {
@@ -707,11 +711,21 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
   const assign = new Map();      // team name -> [player rows]
   for (const [n, claim] of claims) {
     if (claim.teams.length > 1) { contested.push({ player: claim.name, teams: claim.teams }); continue; }
-    const candidates = byName.get(n) ?? [];
-    // Ambiguous names are refused for the same reason contested ones are: a
-    // wrong player is indistinguishable from a right one once it is stored.
+    let candidates = byName.get(n) ?? [];
+    // A five-thousand-player pool carries several people per common name — most
+    // of them practice-squad or retired, and none of them draftable. Refusing
+    // every such name outright dropped real starters: a roster came back one
+    // player short with nothing saying which or why. Narrow to the candidates
+    // that actually carry a consensus rank, which is what "fantasy-relevant"
+    // means here, before giving up.
+    if (candidates.length > 1) {
+      const ranked = candidates.filter((p) => rankedIds.has(p.player_id));
+      if (ranked.length === 1) candidates = ranked;
+    }
+    // Still ambiguous is still refused: a wrong player is indistinguishable
+    // from a right one once it is stored.
     if (candidates.length !== 1) {
-      unmatched.push(`${claim.name}${candidates.length > 1 ? ' (ambiguous)' : ''}`);
+      unmatched.push(`${claim.name}${candidates.length > 1 ? ` (ambiguous — ${candidates.length} players share this name)` : ' (not in the pool)'}`);
       continue;
     }
     const team = claim.teams[0];

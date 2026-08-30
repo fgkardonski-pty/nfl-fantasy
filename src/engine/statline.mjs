@@ -351,12 +351,47 @@ export function uncoveredScoringRules(scoring = {}) {
 const CALIBRATION = { QB: 0.95, RB: 0.85, WR: 0.97, TE: 0.88, K: 0.92, DEF: 1.42 };
 
 /**
+ * How far a position's values are spread around its own middle, as a multiple
+ * of what the archetype curve produces.
+ *
+ * Quarterback alone needed this, and the evidence for it does not depend on
+ * knowing anyone's schedule. Measured against Yahoo's own league-scored week 1
+ * projections, this model spread nine quarterbacks across 11.8 points while
+ * Yahoo spread them across 7.58 — and Yahoo's figure is matchup-INCLUSIVE,
+ * which can only add variance, so their matchup-neutral spread is tighter
+ * still. A neutral curve wider than a matchup-inflated one is over-spread
+ * whatever the ordering. Every one of the six quarterbacks that could be
+ * compared erred in the direction that predicts: the top three too high, the
+ * middle three too low.
+ *
+ * The correction is deliberately short of what the ratio alone would justify
+ * (0.64). With eight data points, some of the gap is ordering and matchup
+ * rather than slope, and those two cannot be separated until a real NFL
+ * schedule with betting lines is loaded. Compressing all the way would be
+ * fitting noise.
+ *
+ * Every other position is left alone because every other position agreed:
+ * RB spread 16.0 against 16.0, TE 6.6 against 6.8, WR 14.3 against 12.7,
+ * DEF 6.3 against 7.4, all with bias inside 6%.
+ */
+const SPREAD = { QB: 0.70 };
+
+/** The rank each position's compression pivots around — roughly its own middle. */
+const PIVOT_RANK = { QB: 8 };
+
+/**
  * Expected per-game fantasy points for a player at `rank` within `pos`, under
  * this league's actual scoring. This is the number a pre-season draft board
  * should rank on.
  */
 export function expectedPointsAtRank(pos, rank, scoring) {
-  return expectedScore(archetypeStatLine(pos, rank), scoring) * (CALIBRATION[pos] ?? 1);
+  const raw = expectedScore(archetypeStatLine(pos, rank), scoring) * (CALIBRATION[pos] ?? 1);
+  const k = SPREAD[pos];
+  if (!k) return raw;
+  // Compress toward the position's own middle, which leaves the middle of the
+  // curve where the measurement says it already belongs and pulls in the tails.
+  const pivot = expectedScore(archetypeStatLine(pos, PIVOT_RANK[pos] ?? 8), scoring) * (CALIBRATION[pos] ?? 1);
+  return pivot + k * (raw - pivot);
 }
 
 export { ANCHORS, DERIVED };

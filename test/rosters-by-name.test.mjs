@@ -20,6 +20,7 @@ process.env.ORACLE_LOG_LEVEL = 'silent';
 
 const { setupRealLeague, importRostersByName } = await import('../src/realdata.mjs');
 const { upsertMany, all, closeDb } = await import('../src/db/index.mjs');
+const await_db = { upsertMany };
 
 test.after(() => { closeDb(); fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
@@ -81,7 +82,8 @@ test('an ambiguous name is refused rather than resolved by guessing', () => {
 test('a name that is simply absent is reported, not silently dropped', () => {
   const r = importRostersByName('test.l.ros', { Mine: ['Nobody At All', 'Josh Allen'] });
   assert.equal(r.players, 1);
-  assert.deepEqual(r.unmatched, ['Nobody At All']);
+  assert.deepEqual(r.unmatched, ['Nobody At All (not in the pool)'],
+    'and says WHY it was dropped — absent from the pool, not ambiguous within it');
 });
 
 test('a team name not in the league is reported', () => {
@@ -114,4 +116,38 @@ test('the league config carries rosters that name real teams and no duplicates',
     }
   }
   assert.equal(Object.keys(cfg.rosters).length, cfg.numTeams, 'every team has a roster');
+});
+
+test('a name shared with a non-draftable player resolves to the real one', () => {
+  // A five-thousand-player pool carries several people per common name, most of
+  // them practice-squad or retired. Refusing every such name dropped real
+  // starters from rosters — the team came back one player short with nothing
+  // saying which. A consensus rank is what separates the two.
+  const { upsertMany } = await_db;
+  upsertMany('players', ['player_id', 'name', 'pos'], [
+    { player_id: 'dup1', name: 'Lamar Jackson', pos: 'QB' },
+    { player_id: 'dup2', name: 'Lamar Jackson', pos: 'WR' },   // the namesake
+  ], ['player_id']);
+  upsertMany('adp', ['player_id', 'season', 'source', 'adp'],
+    [{ player_id: 'dup1', season: 2026, source: 'test', adp: 20 }],
+    ['player_id', 'season', 'source']);
+
+  const r = importRostersByName('test.l.ros', { Mine: ['Lamar Jackson'] });
+  assert.equal(r.players, 1, 'the ranked player is chosen');
+  const saved = all("SELECT player_id FROM rosters WHERE league_key='test.l.ros' AND team_key LIKE '%.t.1'");
+  assert.deepEqual(saved.map((x) => x.player_id), ['dup1']);
+});
+
+test('a name shared by two DRAFTABLE players is still refused', () => {
+  // The tie-break narrows; it does not guess. Two ranked players sharing a name
+  // is exactly the case where picking one is indistinguishable from picking
+  // right, so it stays refused.
+  const { upsertMany } = await_db;
+  upsertMany('adp', ['player_id', 'season', 'source', 'adp'],
+    [{ player_id: 'dup2', season: 2026, source: 'test', adp: 90 }],
+    ['player_id', 'season', 'source']);
+
+  const r = importRostersByName('test.l.ros', { Mine: ['Lamar Jackson'] });
+  assert.equal(r.players, 0);
+  assert.ok(r.unmatched[0].includes('ambiguous'));
 });

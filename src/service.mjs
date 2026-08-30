@@ -19,6 +19,7 @@ import { rankWaiverTargets, breakoutScan, worstDroppable } from './engine/waiver
 import { scanLeague, evaluateOffer } from './engine/trades.mjs';
 import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachTargets, positionalNeed } from './engine/opponent.mjs';
 import { rebuildTeamDefense } from './engine/matchup.mjs';
+import { normaliseName } from './providers/sleeper.mjs';
 import { rankStreamers } from './engine/streaming.mjs';
 import { round, clamp, mean, shrink } from './util/stats.mjs';
 import { logger } from './util/log.mjs';
@@ -1239,4 +1240,9 @@ export function calibrationReport(league, truth, { week = league.current_week } 
   };
 }
 
-const normalise = (s) => String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');
+// Reuses the provider normaliser rather than a second, subtly different one.
+// The first cut stripped punctuation but not generational suffixes, so every
+// player carrying one — Mahomes II, Godwin Jr., Fannin Jr. — failed to match
+// and was silently dropped from the calibration sample. A measurement that
+// quietly discards the players it cannot name is worse than no measurement.
+const normalise = normaliseName;

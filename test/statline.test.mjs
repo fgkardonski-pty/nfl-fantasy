@@ -273,8 +273,16 @@ test('the archetype curve matches Yahoo\'s real week 1 projections', async () =>
   assert.ok(at('QB', 20) > 30 && at('QB', 20) < 40, `QB20 was ${at('QB', 20).toFixed(1)}, expected near Stroud's 35.2`);
   // The error that mattered: the top of the curve running away from the field.
   // Every startable quarterback Yahoo projects sits within about eight points.
-  assert.ok(at('QB', 1) - at('QB', 20) < 16,
-    `QB1 to QB20 spans ${(at('QB', 1) - at('QB', 20)).toFixed(1)}; Yahoo's whole field spans under 8`);
+  // Tightened after measuring against Yahoo directly: this model spread nine
+  // quarterbacks across 11.8 points where Yahoo spread them across 7.58 — and
+  // Yahoo's number is matchup-INCLUSIVE, which can only add variance, so a
+  // matchup-neutral curve wider than it is over-spread whatever the ordering.
+  assert.ok(at('QB', 1) - at('QB', 20) < 9,
+    `QB1 to QB20 spans ${(at('QB', 1) - at('QB', 20)).toFixed(1)}; Yahoo's matchup-inclusive field spans 7.58`);
+  // But not compressed to nothing: an elite quarterback is still worth several
+  // points a game more than a streamer, which is what makes the position
+  // draftable at all.
+  assert.ok(at('QB', 1) - at('QB', 20) > 4);
 
   // Observed: Chargers 33.51, Seahawks 26.39, Broncos 26.15. Defenses in this
   // league score like a mid-tier running back, not like an afterthought.
