@@ -295,7 +295,7 @@ export function setupRealLeague(cfg) {
     keyOf.set(t.name, teamKey);
     return {
       league_key: leagueKey, team_key: teamKey, team_id: teamId,
-      name: t.name, manager: t.name === myName ? 'You' : (t.manager ?? null),
+      name: t.name, manager: t.name === myName ? 'You' : (t.owner ?? t.manager ?? null),
       is_mine: t.name === myName ? 1 : 0,
       faab_remaining: cfg.faabBudget ?? 100,
       waiver_priority: t.waiverPriority ?? null,
@@ -697,12 +697,18 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
   const teams = all('SELECT team_key, name FROM teams WHERE league_key = ?', [leagueKey]);
   const teamByName = new Map(teams.map((t) => [t.name, t]));
 
-  const locals = all("SELECT player_id, name, pos FROM players WHERE pos IN ('QB','RB','WR','TE','K','DEF')");
+  const locals = all("SELECT player_id, name, pos, nfl_team FROM players WHERE pos IN ('QB','RB','WR','TE','K','DEF')");
   const byName = new Map();
+  const defByTeam = new Map();
   for (const p of locals) {
     const n = normaliseName(p.name);
     if (!byName.has(n)) byName.set(n, []);
     byName.get(n).push(p);
+    // Defenses are named a dozen different ways across sources — "Broncos",
+    // "Denver Broncos", "DEN Defense", "Denver D/ST". The NFL team abbreviation
+    // is the one identifier every source agrees on, so a defense resolves by
+    // team and never by string matching.
+    if (p.pos === 'DEF' && p.nfl_team) defByTeam.set(p.nfl_team.toUpperCase(), p);
   }
 
   // Claims first, so a player on two teams is visible before anything is written.
@@ -712,21 +718,48 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
 
   const claims = new Map();
   const unknownTeams = [];
-  for (const [teamName, names] of Object.entries(rostersByTeam ?? {})) {
+  // An entry is either a bare name or an object carrying position, NFL team and
+  // roster slot. The richer form is preferred wherever it is available: it turns
+  // matching from a string comparison into an identification, which is what
+  // separates two real players sharing a name.
+  for (const [teamName, entries] of Object.entries(rostersByTeam ?? {})) {
     if (!teamByName.has(teamName)) { unknownTeams.push(teamName); continue; }
-    for (const name of names ?? []) {
-      const n = normaliseName(name);
-      if (!claims.has(n)) claims.set(n, { name, teams: [] });
-      claims.get(n).teams.push(teamName);
+    for (const entry of entries ?? []) {
+      const e = typeof entry === 'string' ? { name: entry } : entry;
+      if (!e?.name) continue;
+      const n = normaliseName(e.name);
+      const key = e.pos ? `${n}|${e.pos}` : n;
+      if (!claims.has(key)) claims.set(key, { ...e, n, teams: [] });
+      claims.get(key).teams.push(teamName);
     }
   }
 
   const contested = [];
   const unmatched = [];
   const assign = new Map();      // team name -> [player rows]
-  for (const [n, claim] of claims) {
+  for (const claim of claims.values()) {
     if (claim.teams.length > 1) { contested.push({ player: claim.name, teams: claim.teams }); continue; }
-    let candidates = byName.get(n) ?? [];
+
+    // A defense is identified by its NFL team, not its name.
+    if (claim.pos === 'DEF' && claim.nfl) {
+      const def = defByTeam.get(String(claim.nfl).toUpperCase());
+      if (def) {
+        const team = claim.teams[0];
+        if (!assign.has(team)) assign.set(team, []);
+        assign.get(team).push({ ...def, slot: claim.slot });
+        continue;
+      }
+      unmatched.push(`${claim.name} (no DEF found for ${claim.nfl})`);
+      continue;
+    }
+
+    let candidates = byName.get(claim.n) ?? [];
+    // Position is the cheapest and most reliable disambiguator when the source
+    // supplies it, so it is applied before falling back to draft rank.
+    if (candidates.length > 1 && claim.pos) {
+      const samePos = candidates.filter((p) => p.pos === claim.pos);
+      if (samePos.length) candidates = samePos;
+    }
     // A five-thousand-player pool carries several people per common name — most
     // of them practice-squad or retired, and none of them draftable. Refusing
     // every such name outright dropped real starters: a roster came back one
@@ -737,6 +770,9 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
       const ranked = candidates.filter((p) => rankedIds.has(p.player_id));
       if (ranked.length === 1) candidates = ranked;
     }
+    // Carry the source's own roster slot through, so a starting lineup is
+    // recorded as the manager set it rather than re-derived.
+    const withSlot = (p) => ({ ...p, slot: claim.slot });
     // Still ambiguous is still refused: a wrong player is indistinguishable
     // from a right one once it is stored.
     if (candidates.length !== 1) {
@@ -745,7 +781,7 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
     }
     const team = claim.teams[0];
     if (!assign.has(team)) assign.set(team, []);
-    assign.get(team).push(candidates[0]);
+    assign.get(team).push(withSlot(candidates[0]));
   }
 
   const rows = [];
@@ -757,9 +793,10 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
     // here every player starts on the bench and the service promotes them, so a
     // partial roster never claims a starting lineup it cannot field.
     for (const p of players) {
+      const slot = p.slot && p.slot !== 'BN' ? p.slot : 'BN';
       rows.push({
         league_key: leagueKey, team_key: team.team_key, player_id: p.player_id,
-        week, slot: 'BN', is_starter: 0, acquired: 'draft',
+        week, slot, is_starter: slot === 'BN' ? 0 : 1, acquired: 'draft',
       });
     }
     written[teamName] = players.length;
