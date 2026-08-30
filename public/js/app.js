@@ -7,6 +7,7 @@ import { h, api, $, $$, badge, errorBox, loading, ago, pct } from './util.js';
 const VIEWS = {
   warroom: () => import('./views/warroom.js'),
   waivers: () => import('./views/waivers.js'),
+  stream: () => import('./views/stream.js'),
   trades: () => import('./views/trades.js'),
   intel: () => import('./views/intel.js'),
   outlook: () => import('./views/outlook.js'),

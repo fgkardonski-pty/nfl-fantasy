@@ -61,6 +61,9 @@ export async function fetchLines({ season, week }) {
       implied_away: impliedAway != null ? Math.round(impliedAway * 10) / 10 : null,
       roof: null,
       weather: null,
+      // Imported from a live odds feed. The streaming engine keys off this to
+      // refuse ranking against demo fixtures.
+      source: 'real',
     });
   }
   if (rows.length) {

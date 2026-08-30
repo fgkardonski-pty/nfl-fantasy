@@ -118,6 +118,14 @@ export function buildApi() {
     });
   });
 
+  r.get('/api/stream', ({ query }) => {
+    const league = requireLeague(query);
+    return S.streamDefenses(league, {
+      week: int(query.week, league.current_week),
+      limit: Math.min(int(query.limit, 12), 32),
+    });
+  });
+
   // ---- Trades -------------------------------------------------------------
 
   r.get('/api/trades', ({ query }) => {

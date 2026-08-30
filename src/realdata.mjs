@@ -57,14 +57,24 @@ export function clearDemoData() {
     run('DELETE FROM opponent_profiles WHERE league_key = ?', [l.league_key]);
     run('DELETE FROM leagues WHERE league_key = ?', [l.league_key]);
   }
+  // The synthetic NFL slate. Easy to overlook because demo fixtures are built
+  // from real team abbreviations — ARI at WAS with a plausible spread — so they
+  // survive a clean and then look exactly like a real schedule to anything that
+  // reads them, the defense streamer above all.
+  run("DELETE FROM games WHERE source = 'demo'");
+
   // Demo players, and every row keyed to them.
   run("DELETE FROM player_stats WHERE player_id LIKE 'dp%'");
   run("DELETE FROM player_usage WHERE player_id LIKE 'dp%'");
   run("DELETE FROM adp WHERE player_id LIKE 'dp%'");
   run("DELETE FROM players WHERE player_id LIKE 'dp%'");
   const remaining = get("SELECT COUNT(*) c FROM players WHERE player_id LIKE 'dp%'")?.c ?? 0;
-  log.info(`cleared ${leagues.length} demo league(s) and their fictional players`);
-  return { leagues: leagues.length, remainingDemoPlayers: remaining };
+  const staleGames = get("SELECT COUNT(*) c FROM games WHERE source IS NULL")?.c ?? 0;
+  log.info(`cleared ${leagues.length} demo league(s), their fictional players and the synthetic NFL slate`);
+  if (staleGames) {
+    log.warn(`${staleGames} games predate source tracking and cannot be classified — run "real odds" to overwrite them with a real slate`);
+  }
+  return { leagues: leagues.length, remainingDemoPlayers: remaining, untaggedGames: staleGames };
 }
 
 /** How many fictional demo players are currently mixed into the pool. */

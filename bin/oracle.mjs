@@ -35,6 +35,7 @@ const out = (s = '') => process.stdout.write(`${s}\n`);
 const pct = (x, d = 1) => `${(x * 100).toFixed(d)}%`;
 const pad = (s, n) => String(s ?? '').padEnd(n).slice(0, n);
 const rpad = (s, n) => String(s ?? '').padStart(n);
+const n1 = (x) => (x == null ? '—' : Number(x).toFixed(1));
 
 function rule(title = '') {
   const w = Math.min(process.stdout.columns || 96, 96);
@@ -161,6 +162,51 @@ const COMMANDS = {
       for (const b of w.breakouts.slice(0, 6)) {
         out(`  ${pad(b.pos, 4)}${c.white}${pad(b.name, 22)}${c.reset}${c.grey}${b.signal}${c.reset}`);
       }
+    }
+  },
+
+  stream(opts) {
+    const l = league(opts);
+    const week = Number(opts.week ?? l.current_week);
+    const r = S.streamDefenses(l, { week, limit: Number(opts.limit ?? 10) });
+
+    rule(`DEFENSE STREAMER — week ${week}`);
+    if (!r.ok) {
+      out(`  ${c.yellow}no ranking produced${c.reset} (${r.reason})`);
+      out(`  ${c.grey}${r.note}${c.reset}`);
+      out(`\n  ${c.grey}A ranking needs this week's real slate with betting lines:${c.reset}`);
+      out(`    ${c.cyan}node bin/oracle.mjs research odds${c.reset}  ${c.grey}or import a schedule with implied team totals${c.reset}`);
+      return;
+    }
+
+    if (r.mine) {
+      out(`  ${c.white}holding ${c.bold}${r.mine.name}${c.reset}${c.white} vs ${r.mine.opponent} — ${n1(r.mine.mean)} projected${c.reset}`);
+      out(`  ${c.grey}their opponent is implied for ${r.mine.impliedOpponentTotal} points${c.reset}\n`);
+    } else if (r.note) {
+      out(`  ${c.yellow}${r.note}${c.reset}\n`);
+    }
+
+    out(`  ${c.grey}${pad('DEFENSE', 18)}${pad('VS', 8)}${rpad('IMP', 5)} ${rpad('PROJ', 6)} ${rpad('GAIN', 6)}  CLAIM ODDS${c.reset}`);
+    for (const d of r.best) {
+      const gain = d.expectedGain == null ? '  —  ' : (d.expectedGain > 0 ? '+' : '') + n1(d.expectedGain);
+      const gcol = d.expectedGain == null ? c.grey : d.expectedGain > 1.5 ? c.green : d.expectedGain > 0 ? c.cyan : c.grey;
+      // Claim odds, not claim risk: the manager wants to know what they can get.
+      const odds = 1 - (d.claimRisk ?? 0);
+      const ocol = odds > 0.8 ? c.green : odds > 0.5 ? c.yellow : c.red;
+      out(`  ${c.white}${pad(d.name, 18)}${c.reset}${pad((d.home ? 'vs ' : '@ ') + d.opponent, 8)}${rpad(d.impliedOpponentTotal, 5)} ${c.bold}${rpad(n1(d.mean), 6)}${c.reset} ${gcol}${rpad(gain, 6)}${c.reset}  ${ocol}${pct(odds, 0)}${c.reset}`);
+    }
+
+    if (r.recommended) {
+      const d = r.recommended;
+      const why = r.mine
+        ? `${n1(d.expectedGain)} points better than ${r.mine.name}`
+        : `no defense is rostered, and this is the best one we can realistically claim`;
+      out(`\n  ${c.green}CLAIM${c.reset} ${c.bold}${d.name}${c.reset} — ${why}; from waiver priority ${r.waiverPriority ?? '?'} this claim lands about ${pct(1 - d.claimRisk, 0)} of the time.`);
+    } else if (r.mine) {
+      out(`\n  ${c.grey}STAND PAT — nothing available beats ${r.mine.name} by enough to spend a claim on.${c.reset}`);
+    }
+    if (r.contested.length) {
+      out(`  ${c.grey}likely gone before our turn: ${r.contested.map((d) => d.name).join(', ')}${c.reset}`);
     }
   },
 
@@ -717,6 +763,7 @@ ${c.bold}EVERY WEEK${c.reset}
   ${c.cyan}lineup${c.reset}  [--week N]      optimal lineup + win probability + the case for each start/sit
   ${c.cyan}waivers${c.reset} [--limit N]     ranked targets with recommended FAAB bids
   ${c.cyan}trades${c.reset}  [--limit N]     win-win trades and value arbitrage, with the pitch
+  ${c.cyan}stream${c.reset}  [--week N]      defenses to stream, ranked by the offence they face
   ${c.cyan}intel${c.reset}                   rival dossiers and predicted waiver claims
   ${c.cyan}outlook${c.reset} [--sims N]      playoff and championship odds for every team
 

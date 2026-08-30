@@ -206,6 +206,9 @@ CREATE TABLE IF NOT EXISTS games (
   implied_away REAL,
   roof        TEXT,
   weather     TEXT,
+  -- 'real' = imported from a live feed. Anything else is a demo fixture and
+  -- must never be ranked on; see engine/streaming.mjs.
+  source      TEXT,
   PRIMARY KEY (season, week, home, away)
 );
 

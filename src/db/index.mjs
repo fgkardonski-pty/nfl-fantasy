@@ -47,6 +47,12 @@ const ADDED_COLUMNS = {
     // the database may outlive.
     division: 'TEXT',
   },
+  games: {
+    // 'real' for a slate imported from a live schedule/odds feed, anything else
+    // for demo fixtures. The streaming engine refuses to rank real defenses
+    // against invented opponents, and cannot tell them apart without this.
+    source: 'TEXT',
+  },
   matchups: {
     // Whether this pairing was read off Yahoo or generated to give the season
     // simulation something to run on. Without it the app cannot tell the user

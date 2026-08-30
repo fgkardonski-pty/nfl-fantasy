@@ -14,11 +14,12 @@ import { optimalLineup } from './engine/optimizer.mjs';
 import { simulateMatchup, simulateSeason, teamWeekDistribution, roundRobinSchedule } from './engine/simulate.mjs';
 import { optimizeForWinProbability, posture } from './engine/leverage.mjs';
 import { computeVor, replacementLevels, tierize, tierSummary } from './engine/vor.mjs';
-import { expectedPointsAtRank } from './engine/statline.mjs';
+import { expectedPointsAtRank, archetypeStatLine } from './engine/statline.mjs';
 import { rankWaiverTargets, breakoutScan, worstDroppable } from './engine/waivers.mjs';
 import { scanLeague, evaluateOffer } from './engine/trades.mjs';
 import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachTargets, positionalNeed } from './engine/opponent.mjs';
 import { rebuildTeamDefense } from './engine/matchup.mjs';
+import { rankStreamers } from './engine/streaming.mjs';
 import { round, clamp, mean, shrink } from './util/stats.mjs';
 import { logger } from './util/log.mjs';
 
@@ -927,4 +928,93 @@ export function healthReport() {
     jobs: all('SELECT job, MAX(started_at) last, ok FROM job_runs GROUP BY job ORDER BY last DESC LIMIT 10'),
     model: MODEL_VERSION,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Defense streaming
+// ---------------------------------------------------------------------------
+
+/**
+ * Rank defenses to stream for a week.
+ *
+ * Assembles the three inputs the engine needs and hands back its refusal
+ * unchanged when they are not there. The unit-quality term prefers real played
+ * stats and falls back to the positional archetype, which is honest but coarse:
+ * before any games are played every defense at the same rank looks identical,
+ * so the ordering is then driven entirely by the matchup — which, for this
+ * particular decision, is most of the truth anyway.
+ */
+export function streamDefenses(league, { week = league.current_week, limit = 10 } = {}) {
+  const season = league.season;
+  const games = all('SELECT * FROM games WHERE season = ? AND week = ?', [season, week]);
+
+  const defs = all(
+    `SELECT p.player_id, p.name, p.nfl_team, a.adp
+       FROM players p
+       LEFT JOIN adp a ON a.player_id = p.player_id AND a.season = ?
+      WHERE p.pos = 'DEF' AND p.nfl_team IS NOT NULL`,
+    [season]
+  );
+
+  // Deduplicate: a defense can carry ADP rows from several sources, and one
+  // NFL team must appear once or the ranking lists the same unit twice.
+  const byTeam = new Map();
+  for (const d of defs) {
+    const prior = byTeam.get(d.nfl_team);
+    if (!prior || (d.adp != null && (prior.adp == null || d.adp < prior.adp))) byTeam.set(d.nfl_team, d);
+  }
+
+  const ranked = [...byTeam.values()].sort((a, b) => (a.adp ?? 1e9) - (b.adp ?? 1e9));
+  const rosteredIds = new Set(
+    all('SELECT player_id FROM rosters WHERE league_key = ? AND week = ?', [league.league_key, week])
+      .map((r) => r.player_id)
+  );
+
+  const me = myTeam(league.league_key);
+  const myDef = me
+    ? all(
+        `SELECT p.nfl_team FROM rosters r JOIN players p USING(player_id)
+          WHERE r.league_key = ? AND r.team_key = ? AND r.week = ? AND p.pos = 'DEF'`,
+        [league.league_key, me.team_key, week]
+      )[0]?.nfl_team ?? null
+    : null;
+
+  const defenses = ranked.map((d, i) => ({
+    player_id: d.player_id,
+    name: d.name,
+    nfl_team: d.nfl_team,
+    // Real per-game production once weeks have been played; the archetype at
+    // this defense's draft rank until then.
+    unit: defenseUnitLine(d.player_id, season, week) ?? archetypeStatLine('DEF', i + 1),
+    rostered: rosteredIds.has(d.player_id),
+  }));
+
+  return rankStreamers({
+    defenses, games, scoring: league.scoring,
+    myDefenseTeam: myDef,
+    waiverPriority: me?.waiver_priority ?? null,
+    leagueSize: league.num_teams,
+    limit,
+  });
+}
+
+/** A defense's average real production per game so far, or null if it has none. */
+function defenseUnitLine(playerId, season, week) {
+  const rows = all(
+    'SELECT stats FROM player_stats WHERE player_id = ? AND season = ? AND week < ?',
+    [playerId, season, week]
+  );
+  if (!rows.length) return null;
+  const sum = {};
+  for (const r of rows) {
+    for (const [k, v] of Object.entries(j(r.stats, {}))) {
+      // Points allowed is the matchup term, supplied by the betting line rather
+      // than by history. Averaging in what this defense happened to allow
+      // against other opponents would double-count the schedule it already had.
+      if (k === 'def_pts_allowed' || k.startsWith('def_pa_')) continue;
+      sum[k] = (sum[k] ?? 0) + Number(v || 0);
+    }
+  }
+  for (const k of Object.keys(sum)) sum[k] /= rows.length;
+  return Object.keys(sum).length ? sum : null;
 }

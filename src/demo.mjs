@@ -224,6 +224,9 @@ export function generateDemoLeague({
           temp_f: Math.round(rng.range(28, 82)),
           precip_mm: rng.bool(0.22) ? Math.round(rng.gammaMS(3, 3) * 10) / 10 : 0,
         }),
+        // Invented fixtures. Tagged so nothing downstream can mistake this for
+        // a real NFL slate and rank real defenses against it.
+        source: 'demo',
       });
     }
 
