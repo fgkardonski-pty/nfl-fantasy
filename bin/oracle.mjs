@@ -1105,6 +1105,33 @@ ${c.grey}Configuration lives in .env — see .env.example.${c.reset}
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Commands within one or two edits of what was typed.
+ *
+ * Deliberately strict: a suggestion that is not obviously right is worse than
+ * none, because it sends someone off to try a command that will also fail.
+ */
+function nearestCommands(input, names, max = 3) {
+  const scored = names
+    .map((n) => ({ n, d: editDistance(input.toLowerCase(), n.toLowerCase()) }))
+    .filter(({ n, d }) => d <= 2 || n.startsWith(input.toLowerCase()))
+    .sort((a, b) => a.d - b.d);
+  return scored.slice(0, max).map((x) => x.n);
+}
+
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > 3) return 99;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = row;
+  }
+  return prev[b.length];
+}
+
 function parseArgs(argv) {
   const opts = {};
   const positional = [];
@@ -1129,6 +1156,13 @@ async function main() {
   const fn = COMMANDS[cmd];
   if (!fn) {
     out(`${c.red}Unknown command "${cmd}".${c.reset}`);
+    const near = nearestCommands(cmd, Object.keys(COMMANDS));
+    if (near.length) out(`${c.grey}Did you mean: ${near.map((n) => c.cyan + n + c.reset).join(', ')}?${c.grey}${c.reset}`);
+    // The likeliest cause of a command that reads correctly but does not
+    // exist: this checkout is behind the one the instruction came from.
+    out(`${c.grey}If you were told to run this, the command may be newer than your checkout:${c.reset}`);
+    out(`  ${c.cyan}git pull${c.reset}`);
+    out('');
     COMMANDS.help();
     process.exit(1);
   }
