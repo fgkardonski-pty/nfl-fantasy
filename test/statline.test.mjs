@@ -257,3 +257,40 @@ test('documentation keys and zero-valued rules are not reported as gaps', async 
   const gaps = uncoveredScoringRules({ _note: 'a comment', def_pa_21_27: 0, rush_yd: 0.1 });
   assert.deepEqual(gaps, [], 'neither a note nor a rule worth nothing is a defect');
 });
+
+test('the archetype curve matches Yahoo\'s real week 1 projections', async () => {
+  // Ground truth, read off Yahoo's own league-scored roster pages. This is the
+  // only external check the project has, and it is what caught the two errors
+  // that survived to draft night: a quarterback curve far too steep at the top
+  // and defenses priced at half their real value. They cancelled in the total,
+  // so nothing looked broken until each position was measured on its own.
+  const fs = await import('node:fs/promises');
+  const scoring = JSON.parse(await fs.readFile('fantazy-fulzbol.json', 'utf8')).scoring;
+  const at = (pos, rank) => expectedPointsAtRank(pos, rank, scoring);
+
+  // Observed: nine quarterbacks between 35.2 (Stroud) and 42.8 (Burrow).
+  assert.ok(at('QB', 1) > 40 && at('QB', 1) < 48, `QB1 was ${at('QB', 1).toFixed(1)}, expected around Burrow's 42.8`);
+  assert.ok(at('QB', 20) > 30 && at('QB', 20) < 40, `QB20 was ${at('QB', 20).toFixed(1)}, expected near Stroud's 35.2`);
+  // The error that mattered: the top of the curve running away from the field.
+  // Every startable quarterback Yahoo projects sits within about eight points.
+  assert.ok(at('QB', 1) - at('QB', 20) < 16,
+    `QB1 to QB20 spans ${(at('QB', 1) - at('QB', 20)).toFixed(1)}; Yahoo's whole field spans under 8`);
+
+  // Observed: Chargers 33.51, Seahawks 26.39, Broncos 26.15. Defenses in this
+  // league score like a mid-tier running back, not like an afterthought.
+  assert.ok(at('DEF', 1) > 28, `DEF1 was ${at('DEF', 1).toFixed(1)}, the best observed defense projected 33.5`);
+  assert.ok(at('DEF', 8) > 20, `DEF8 was ${at('DEF', 8).toFixed(1)}, two mid defenses projected 26`);
+  // And a defense must outscore a mid-tier receiver, which is what makes
+  // streaming worth doing at all here.
+  assert.ok(at('DEF', 8) > at('WR', 12), 'a mid defense beats a WR12 in this scoring');
+
+  // Observed: Dicker 9.01, Little 8.16, Reichard 7.73 — a tight, low band.
+  assert.ok(at('K', 1) > 7 && at('K', 1) < 12);
+  assert.ok(at('K', 1) - at('K', 20) < 5, 'kickers are nearly interchangeable');
+
+  // Observed skill players: Chase 18.86, Taylor 18.91, Barkley 16.56 at the
+  // top; Kamara 2.96 and Braelon Allen 3.13 at the bottom of a bench.
+  assert.ok(at('RB', 1) > 16 && at('RB', 1) < 28);
+  assert.ok(at('WR', 1) > 15 && at('WR', 1) < 26);
+  assert.ok(at('TE', 1) > at('TE', 12), 'tight end is top-heavy, as observed');
+});

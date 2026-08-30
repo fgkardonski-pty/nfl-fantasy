@@ -1154,3 +1154,89 @@ export function rosterCompleteness(league, { week = league.current_week } = {}) 
     mine: teams.find((t) => t.is_mine) ?? null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Calibration against an external source
+// ---------------------------------------------------------------------------
+
+/**
+ * Compare this model's projections against Yahoo's own, league-scored.
+ *
+ * The only external check the project has. Everything else it can measure is
+ * measured against itself, which is how two large errors survived to draft
+ * night: the quarterback curve was far too steep at the top and defenses were
+ * priced at half what this league's rules produce, and because the two
+ * cancelled in the total, the bottom line looked right for compensating wrong
+ * reasons. A per-position breakdown is therefore the point — an aggregate
+ * error near zero is exactly what those two errors produced.
+ *
+ * @param {Object} truth  { players: {name: points}, teamTotals: {team: points} }
+ */
+export function calibrationReport(league, truth, { week = league.current_week } = {}) {
+  const byName = new Map();
+  for (const p of all("SELECT player_id, name, pos FROM players WHERE pos IN ('QB','RB','WR','TE','K','DEF')")) {
+    const n = normalise(p.name);
+    if (!byName.has(n)) byName.set(n, []);
+    byName.get(n).push(p);
+  }
+
+  const rows = [];
+  const unmatched = [];
+  for (const [name, actual] of Object.entries(truth?.players ?? {})) {
+    const hits = byName.get(normalise(name)) ?? [];
+    if (hits.length !== 1) { unmatched.push(name); continue; }
+    const [proj] = project(league, [{ ...hits[0], status: '', bye_week: null }], week);
+    rows.push({ name, pos: hits[0].pos, ours: round(proj.mean, 2), theirs: actual, error: round(proj.mean - actual, 2) });
+  }
+
+  const byPos = {};
+  for (const r of rows) {
+    (byPos[r.pos] ??= []).push(r);
+  }
+  const positions = Object.entries(byPos).map(([pos, rs]) => {
+    const bias = rs.reduce((a, r) => a + r.error, 0) / rs.length;
+    const rmse = Math.sqrt(rs.reduce((a, r) => a + r.error ** 2, 0) / rs.length);
+    const theirMean = rs.reduce((a, r) => a + r.theirs, 0) / rs.length;
+    return {
+      pos, n: rs.length,
+      bias: round(bias, 2),
+      rmse: round(rmse, 2),
+      // Bias as a share of the position's own scale: two points of error on a
+      // kicker is a different problem from two points on a quarterback.
+      biasPct: theirMean ? round((bias / theirMean) * 100, 1) : null,
+      spreadOurs: round(Math.max(...rs.map((r) => r.ours)) - Math.min(...rs.map((r) => r.ours)), 1),
+      spreadTheirs: round(Math.max(...rs.map((r) => r.theirs)) - Math.min(...rs.map((r) => r.theirs)), 1),
+    };
+  }).sort((a, b) => Math.abs(b.bias) - Math.abs(a.bias));
+
+  // Team totals only where the roster is complete: a missing kicker and defense
+  // is worth about 35 points here and would swamp any real calibration error.
+  const completeness = rosterCompleteness(league, { week });
+  const teams = [];
+  for (const [teamName, actual] of Object.entries(truth?.teamTotals ?? {})) {
+    const t = completeness.teams.find((x) => x.name === teamName);
+    if (!t) continue;
+    if (!t.complete) { teams.push({ name: teamName, theirs: actual, ours: null, skipped: 'roster incomplete', have: t.have, size: t.size }); continue; }
+    const roster = rosterOf(league.league_key, t.team_key, week);
+    const projections = project(league, roster, week);
+    const { lineup } = optimalLineup(projections, league.slots, (p) => p.mean);
+    const ours = lineup.reduce((a, s) => a + (s.player?.mean ?? 0), 0);
+    teams.push({ name: teamName, theirs: actual, ours: round(ours, 2), error: round(ours - actual, 2) });
+  }
+
+  const all_ = rows;
+  return {
+    week,
+    players: rows.sort((a, b) => Math.abs(b.error) - Math.abs(a.error)),
+    positions,
+    teams,
+    unmatched,
+    overall: all_.length ? {
+      n: all_.length,
+      bias: round(all_.reduce((a, r) => a + r.error, 0) / all_.length, 2),
+      rmse: round(Math.sqrt(all_.reduce((a, r) => a + r.error ** 2, 0) / all_.length), 2),
+    } : null,
+  };
+}
+
+const normalise = (s) => String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');

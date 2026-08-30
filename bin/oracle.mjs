@@ -165,6 +165,57 @@ const COMMANDS = {
     }
   },
 
+  calibrate(opts) {
+    const l = league(opts);
+    const file = opts.file ?? 'fantazy-fulzbol.json';
+    let truth;
+    try {
+      truth = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8')).yahooWeek1;
+    } catch (e) { out(`${c.red}Could not read ${file}: ${e.message}${c.reset}`); process.exit(1); }
+    if (!truth) { out(`${c.red}No "yahooWeek1" block in ${file}.${c.reset}`); process.exit(1); }
+
+    const r = S.calibrationReport(l, truth, { week: Number(opts.week ?? l.current_week) });
+    rule(`CALIBRATION vs Yahoo — week ${r.week} · ${r.overall?.n ?? 0} players matched`);
+
+    // Per position first, because this is the check an aggregate hides: two
+    // large errors in opposite directions sum to nearly nothing.
+    out(`  ${c.grey}${pad('POS', 6)}${rpad('N', 3)} ${rpad('BIAS', 8)}${rpad('%', 8)}${rpad('RMSE', 7)}  ${rpad('OUR SPREAD', 11)}${rpad('THEIRS', 8)}${c.reset}`);
+    for (const p of r.positions) {
+      const bad = Math.abs(p.biasPct ?? 0) > 12;
+      const col = bad ? c.red : Math.abs(p.biasPct ?? 0) > 6 ? c.yellow : c.green;
+      out(`  ${c.white}${pad(p.pos, 6)}${c.reset}${rpad(p.n, 3)} ${col}${rpad((p.bias > 0 ? '+' : '') + p.bias, 8)}${rpad((p.biasPct > 0 ? '+' : '') + p.biasPct + '%', 8)}${c.reset}${rpad(p.rmse, 7)}  ${rpad(p.spreadOurs, 11)}${rpad(p.spreadTheirs, 8)}`);
+    }
+    if (r.overall) {
+      out(`  ${c.grey}${pad('ALL', 6)}${rpad(r.overall.n, 3)} ${rpad((r.overall.bias > 0 ? '+' : '') + r.overall.bias, 8)}${rpad('', 8)}${rpad(r.overall.rmse, 7)}${c.reset}`);
+      out(`  ${c.grey}A near-zero ALL bias proves nothing on its own — two opposite errors sum to it.${c.reset}`);
+    }
+
+    const worst = r.players.slice(0, Number(opts.limit ?? 10));
+    if (worst.length) {
+      out(`\n  ${c.bold}Largest disagreements${c.reset}`);
+      for (const p of worst) {
+        const col = Math.abs(p.error) > 8 ? c.red : Math.abs(p.error) > 4 ? c.yellow : c.grey;
+        out(`  ${pad(p.pos, 5)}${c.white}${pad(p.name, 22)}${c.reset}ours ${rpad(n1(p.ours), 6)}  theirs ${rpad(n1(p.theirs), 6)}  ${col}${(p.error > 0 ? '+' : '') + n1(p.error)}${c.reset}`);
+      }
+    }
+
+    const cmp = r.teams.filter((t) => t.ours != null);
+    if (cmp.length) {
+      out(`\n  ${c.bold}Team totals (complete rosters only)${c.reset}`);
+      for (const t of cmp) {
+        const col = Math.abs(t.error) > 15 ? c.red : Math.abs(t.error) > 7 ? c.yellow : c.green;
+        out(`  ${c.white}${pad(t.name, 24)}${c.reset}ours ${rpad(n1(t.ours), 7)}  theirs ${rpad(n1(t.theirs), 7)}  ${col}${(t.error > 0 ? '+' : '') + n1(t.error)}${c.reset}`);
+      }
+    }
+    const skipped = r.teams.filter((t) => t.ours == null);
+    if (skipped.length) {
+      out(`  ${c.grey}not comparable (incomplete rosters): ${skipped.map((t) => `${t.name} ${t.have}/${t.size}`).join(', ')}${c.reset}`);
+    }
+    if (r.unmatched.length) {
+      out(`  ${c.grey}not in the player pool (${r.unmatched.length}): ${r.unmatched.slice(0, 8).join(', ')}${r.unmatched.length > 8 ? ' …' : ''}${c.reset}`);
+    }
+  },
+
   rosters(opts) {
     const l = league(opts);
     const r = S.rosterCompleteness(l, { week: Number(opts.week ?? l.current_week) });
@@ -834,6 +885,7 @@ ${c.bold}EVERY WEEK${c.reset}
   ${c.cyan}trades${c.reset}  [--limit N]     win-win trades and value arbitrage, with the pitch
   ${c.cyan}stream${c.reset}  [--week N]      defenses to stream, ranked by the offence they face
   ${c.cyan}rosters${c.reset}                 how much of each team's roster the database actually holds
+  ${c.cyan}calibrate${c.reset}               measure this model against Yahoo's own league-scored numbers
   ${c.cyan}intel${c.reset}                   rival dossiers and predicted waiver claims
   ${c.cyan}outlook${c.reset} [--sims N]      playoff and championship odds for every team
 

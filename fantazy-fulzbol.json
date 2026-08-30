@@ -52,23 +52,76 @@
     { "name": "The Ternichian",        "division": "Division 1", "waiverPriority": 16 }
   ],
 
+  "_yahooWeek1": "Yahoo's own week 1 projections, league-scored, for the starting lineup each manager actually fielded. This is GROUND TRUTH for calibration: it is the only place in this project where a number from outside our own model can be compared against it. Two structural errors were found this way and would not have been found any other way \u2014 the quarterback curve was far too steep at the top, and defenses were priced at roughly half what this league's inflated rules produce \u2014 and they were cancelling in the total, so the bottom line looked fine for compensating wrong reasons. Only teams whose roster is COMPLETE can be compared, since a missing kicker and defense costs about 35 points.",
+  "yahooWeek1": {
+    "_teamTotals": "Starting-lineup projection, week 1.",
+    "teamTotals": {
+      "MISSION SUBMISSION": 150.18,
+      "Datsun": 143.82,
+      "The Ternichian": 141.72,
+      "Lux Valebergs": 141.52,
+      "Los Acereros": 141.22,
+      "Fly Agaric": 140.14,
+      "Count Snoop the Loop": 137.99,
+      "INGLOURIOUS BASTERDS": 137.04,
+      "Frank the Tank": 137.00,
+      "PUSHERO": 135.86,
+      "Walker Texas Ranger": 135.22,
+      "Guashingtonians": 131.10,
+      "VelociRaptor": 128.03,
+      "McGiver": 119.68,
+      "Ray Finkle": 119.43,
+      "Alonso's": 100.29
+    },
+    "_players": "Per-player projections read off the roster pages. Every one is a calibration point.",
+    "players": {
+      "Josh Allen": 39.11, "Kyler Murray": 37.20, "Matthew Stafford": 38.16, "Daniel Jones": 37.14,
+      "Joe Burrow": 42.80, "C.J. Stroud": 35.22, "Lamar Jackson": 40.56, "Drake Maye": 37.84,
+      "Patrick Mahomes II": 35.74,
+      "D'Andre Swift": 12.98, "Tony Pollard": 9.63, "Saquon Barkley": 16.56, "Bucky Irving": 12.83,
+      "Jonathan Taylor": 18.91, "Javonte Williams": 15.47, "Braelon Allen": 3.13, "Alvin Kamara": 2.96,
+      "Ja'Marr Chase": 18.86, "Davante Adams": 12.31, "Tee Higgins": 14.19, "Parker Washington": 11.58,
+      "Rashee Rice": 12.86, "Christian Watson": 11.90, "Chris Godwin Jr.": 8.96, "Rashid Shaheed": 7.25,
+      "Deebo Samuel Sr.": 7.03, "Wan'Dale Robinson": 8.55, "Denzel Boston": 6.18, "Jauan Jennings": 6.62,
+      "Jayden Reed": 9.31, "Jalen Coker": 8.96,
+      "Harold Fannin Jr.": 8.95, "Colston Loveland": 12.27, "Dalton Kincaid": 7.00, "Chig Okonkwo": 5.52,
+      "Brenton Strange": 6.70,
+      "Cameron Dicker": 9.01, "Cam Little": 8.16, "Will Reichard": 7.73,
+      "Denver Broncos": 26.15, "Seattle Seahawks": 26.39, "Los Angeles Chargers": 33.51
+    }
+  },
+
   "_rosters": "Rosters as far as they are known. MISSION SUBMISSION is complete (all 13, verified: its eight starters sum to Yahoo's 150.18). Every other team is rounds 1-6 only, transcribed from the draft-board screenshots, so 7 of 13 spots are unknown \u2014 and critically that includes the KICKER and DEFENSE for all of them. In this league those two slots are not filler: MISSION SUBMISSION's Will Reichard and the Chargers defense are 41.24 of their 150.18 starting projection, 27 percent, and the Chargers alone outscore every one of their skill starters bar Joe Burrow. So a six-pick team's projection here is not merely low, it is missing the single largest scoring slot on the roster. Brock Purdy is CONFIRMED on Count Snoop the Loop, which means Guashingtonians' sixth pick is a genuine unknown rather than a misattribution. Fill teams in from Yahoo's roster pages; the app reports what is still missing.",
   "rosters": {
       "Frank the Tank": [
-          "Ja'Marr Chase",
-          "Josh Allen",
-          "D'Andre Swift",
-          "Davante Adams",
-          "Harold Fannin Jr.",
-          "Tony Pollard"
+              "Josh Allen",
+              "D'Andre Swift",
+              "Ja'Marr Chase",
+              "Harold Fannin Jr.",
+              "Davante Adams",
+              "Tony Pollard",
+              "Cameron Dicker",
+              "Denver Broncos",
+              "Kyler Murray",
+              "Wan'Dale Robinson",
+              "Denzel Boston",
+              "Braelon Allen",
+              "Jauan Jennings"
       ],
       "Fly Agaric": [
-          "Saquon Barkley",
-          "Tee Higgins",
-          "Colston Loveland",
-          "Bucky Irving",
-          "Parker Washington",
-          "Matthew Stafford"
+              "Matthew Stafford",
+              "Saquon Barkley",
+              "Tee Higgins",
+              "Colston Loveland",
+              "Parker Washington",
+              "Bucky Irving",
+              "Cam Little",
+              "Seattle Seahawks",
+              "Jayden Reed",
+              "Jalen Coker",
+              "Daniel Jones",
+              "Brenton Strange",
+              "Alvin Kamara"
       ],
       "The Ternichian": [
           "Jahmyr Gibbs",

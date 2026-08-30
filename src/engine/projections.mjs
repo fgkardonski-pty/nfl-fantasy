@@ -18,6 +18,7 @@ import { clamp, gammaCdf, gammaQuantileMS } from '../util/stats.mjs';
 import { scoreStatLine } from './scoring.mjs';
 import { usageProfile, opportunityScore, ewma, POSITION_PRIORS, shrinkToPrior } from './features.mjs';
 import { defenseMultiplier, environmentMultiplier, weatherMultiplier, findGame, weekHasSchedule } from './matchup.mjs';
+import { expectedPointsAtRank } from './statline.mjs';
 
 export const MODEL_VERSION = 'oracle-proj-1.4';
 
@@ -53,7 +54,27 @@ export function baselinePpg(playerId, pos, season, throughWeek, scoring) {
 
   const priorPpg = POSITION_PRIORS[pos]?.ppg ?? 10;
   if (!games) {
-    return { ppg: priorPpg, games: 0, recent: null, seasonAvg: null, source: 'positional prior (no games played)' };
+    // Before a single game is played there are no stats, and a flat positional
+    // prior makes every player at a position identical — every quarterback
+    // 16.5, every defense 7.0. That is not a small inaccuracy: it is the whole
+    // season-long side of the platform declining to distinguish Josh Allen from
+    // a backup, so the war room, waivers and trades all rank teammates level
+    // and the numbers still look computed.
+    //
+    // The draft board already solves this. Consensus rank -> positional rank ->
+    // archetype stat line -> THIS league's scoring is the same chain, and it is
+    // calibrated against real projections. Falling back to it costs nothing and
+    // is right for the entire preseason, which is exactly when the flat prior
+    // was doing the most damage.
+    const rank = positionalRankOf(playerId, pos, season);
+    if (rank != null) {
+      return {
+        ppg: expectedPointsAtRank(pos, rank, scoring),
+        games: 0, recent: null, seasonAvg: null, rank,
+        source: `no games played — ${pos}${rank} archetype priced on this league's scoring`,
+      };
+    }
+    return { ppg: priorPpg, games: 0, recent: null, seasonAvg: null, source: 'positional prior (no games played, no consensus rank)' };
   }
   const recent = ewma(pts, 2.5);
   const seasonAvg = pts.reduce((a, b) => a + b, 0) / games;
@@ -260,4 +281,43 @@ export function profile(proj) {
   else if (pBust < 0.18) label = 'safe floor';
   else if (pBust > 0.40) label = 'volatile';
   return { pStartable, pBoom, pBust, label };
+}
+
+
+// ---------------------------------------------------------------------------
+// Positional rank from consensus ADP
+// ---------------------------------------------------------------------------
+
+/**
+ * A player's rank WITHIN his position, by consensus draft position.
+ *
+ * Memoised per season because the no-stats path runs for every player on every
+ * roster on every projection call, and deriving the ordering fresh each time
+ * would re-sort the whole player pool hundreds of times per request.
+ *
+ * Prefers a published pos_rank when the source supplies one; otherwise the rank
+ * is derived by ordering that position's players on ADP, which is the same
+ * thing the draft board does.
+ */
+const rankCache = new Map();
+
+export function invalidateRankCache() { rankCache.clear(); }
+
+function positionalRankOf(playerId, pos, season) {
+  const key = `${season}|${pos}`;
+  let map = rankCache.get(key);
+  if (!map) {
+    const rows = all(
+      `SELECT a.player_id, MIN(a.adp) AS adp, MAX(a.pos_rank) AS pos_rank
+         FROM adp a JOIN players p ON p.player_id = a.player_id
+        WHERE a.season = ? AND p.pos = ?
+        GROUP BY a.player_id
+        ORDER BY adp ASC`,
+      [season, pos]
+    );
+    map = new Map();
+    rows.forEach((r, i) => map.set(r.player_id, r.pos_rank ?? i + 1));
+    rankCache.set(key, map);
+  }
+  return map.get(playerId) ?? null;
 }
