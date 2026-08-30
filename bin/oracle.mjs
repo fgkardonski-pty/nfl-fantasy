@@ -712,13 +712,28 @@ const COMMANDS = {
       for (let w = week; w <= through; w++) {
         const res = await importWeeklyFromSleeper({ season, week: w, kind });
         if (!res.ok) { out(`${c.yellow}!${c.reset} week ${w}: ${res.note}`); continue; }
+
+        // A green tick over zero rows is a lie about the outcome. The two ways
+        // to write nothing are completely different problems and must not print
+        // the same line: an unplayed week is fine and expected, whereas a full
+        // response that matched no local player means the id link is broken.
+        if (res.provided === 0) {
+          out(`${c.yellow}\u25CB${c.reset} ${kind} ${season} wk${w}: nothing to import — Sleeper has no data for this week yet.`);
+          continue;
+        }
+        if (res.written === 0) {
+          out(`${c.red}\u2717${c.reset} ${kind} ${season} wk${w}: Sleeper returned ${res.provided} players and NONE matched a local player.`);
+          out(`  ${c.grey}The sleeper_id link is broken. Run ${c.cyan}real seed${c.reset}${c.grey}, then ${c.cyan}real probe-week --week ${w}${c.reset}${c.grey}.${c.reset}`);
+          continue;
+        }
         total += res.written;
         out(`${c.green}\u2713${c.reset} ${kind} ${season} wk${w}: ${c.bold}${res.written}${c.reset} players (${res.usage} with usage), ${res.unknownIds} ids not in our player table`);
-        if (res.written === 0 && res.provided > 0) {
-          out(`  ${c.red}!${c.reset} Sleeper returned ${res.provided} players but none matched. Run ${c.cyan}real seed${c.reset} first, then ${c.cyan}real probe-week --week ${w}${c.reset}.`);
-        }
       }
-      if (total) out(`${c.grey}Weekly evidence now feeds projections — the War Room should stop pricing teammates identically.${c.reset}`);
+      if (total) {
+        out(`${c.grey}Weekly evidence now feeds projections — the War Room should stop pricing teammates identically.${c.reset}`);
+      } else {
+        out(`${c.grey}Nothing was written, so projections still fall back to positional archetypes.${c.reset}`);
+      }
       return;
     }
     if (sub === 'probe-week') {
@@ -726,6 +741,21 @@ const COMMANDS = {
       const week = Number(opts.week ?? 1);
       const kind = opts.kind === 'projections' ? 'projections' : 'stats';
       const r = await probeSleeperWeekly({ season, week, kind });
+      if (!r.ok && r.reason === 'empty-week') {
+        out(`${c.yellow}\u25CB${c.reset} ${r.note}`);
+        if (r.state) {
+          out(`  ${c.grey}Sleeper currently reports: season ${r.state.season}, week ${r.state.week} (${r.state.seasonType}).${c.reset}`);
+        }
+        // The mapping is the thing that needs verifying, and it can be verified
+        // today against any season that has already been played. Waiting for
+        // week 1 to kick off would mean discovering a wrong stat key on a
+        // Sunday, which is the worst possible time to discover it.
+        out(`\n  ${c.bold}Verify the stat mapping now, against a season that has been played:${c.reset}`);
+        out(`    ${c.cyan}node bin/oracle.mjs real probe-week --season ${season - 1} --week 1${c.reset}`);
+        out(`  ${c.grey}And for the upcoming week, projections exist before stats do:${c.reset}`);
+        out(`    ${c.cyan}node bin/oracle.mjs real probe-week --week ${week} --kind projections${c.reset}`);
+        return;
+      }
       if (!r.ok) {
         out(`${c.red}\u2717${c.reset} ${r.note}`);
         out(`${c.grey}If this machine can reach api.sleeper.app in a browser, the block is this process's network, not Sleeper.${c.reset}`);

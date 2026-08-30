@@ -606,9 +606,22 @@ export async function importWeeklyFromSleeper({ season, week, kind = 'stats' } =
  */
 export async function probeSleeperWeekly({ season, week, kind = 'stats' } = {}) {
   const blobs = await sleeper.weeklyBlobs({ season, week, kind });
-  if (!blobs) return { ok: false, note: 'no response (network blocked, or the week has no data yet)' };
+  if (!blobs) return { ok: false, reason: 'no-response', note: 'no response at all — the network is blocking api.sleeper.app' };
 
   const ids = Object.keys(blobs);
+
+  // An empty object is a REACHED endpoint with nothing in it, which is the
+  // normal state for a week that has not been played. Reporting that as a clean
+  // probe was worse than useless: the mapping check below is vacuously true
+  // over zero players, so "every returned key is accounted for" would print
+  // while nothing whatsoever had been verified.
+  if (!ids.length) {
+    const state = await sleeper.nflState().catch(() => null);
+    return {
+      ok: false, reason: 'empty-week', season, week, kind, state,
+      note: `Sleeper answered, so the connection is fine — it simply has no ${kind} for ${season} week ${week} yet.`,
+    };
+  }
   const seen = new Map();
   for (const raw of Object.values(blobs)) {
     for (const [k, v] of Object.entries(raw ?? {})) {
