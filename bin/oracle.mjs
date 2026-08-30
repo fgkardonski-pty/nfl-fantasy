@@ -17,6 +17,7 @@ import * as oauth from '../src/providers/yahoo/oauth.mjs';
 import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextContestedPick } from '../src/engine/draft.mjs';
+import { uncoveredScoringRules } from '../src/engine/statline.mjs';
 import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
@@ -493,6 +494,25 @@ const COMMANDS = {
       }
       return;
     }
+    if (sub === 'check') {
+      const league = S.getLeague(opts.league);
+      if (!league) { out(`${c.red}No league loaded.${c.reset}`); process.exit(1); }
+      rule(`SCORING COVERAGE — ${league.name}`);
+      const gaps = uncoveredScoringRules(league.scoring);
+      const numeric = Object.values(league.scoring).filter((x) => typeof x === 'number').length;
+      out(`  ${numeric - gaps.length} of ${numeric} scoring rules are exercised by the valuation model.\n`);
+      if (!gaps.length) { out(`  ${c.green}\u2713 every rule is fed by an archetype${c.reset}`); return; }
+      out(`  ${c.yellow}These rules score points but NOTHING feeds them, so they are worth zero${c.reset}`);
+      out(`  ${c.yellow}in every valuation this app produces:${c.reset}\n`);
+      for (const g of gaps) {
+        const big = Math.abs(g.points) >= 0.4;
+        out(`   ${big ? c.red + '!' : c.grey + '\u00b7'}${c.reset} ${g.stat.padEnd(22)}${String(g.points).padStart(6)} pts`);
+      }
+      out(`\n  ${c.grey}Rare events (return touchdowns, two-point conversions) cost little in${c.reset}`);
+      out(`  ${c.grey}expectation. A high per-unit rate on a COMMON stat does not — check those${c.reset}`);
+      out(`  ${c.grey}against Yahoo before trusting any number this app prints.${c.reset}`);
+      return;
+    }
     if (sub === 'fp-csv') {
       const file = opts.file ?? opts._file;
       if (!file) {
@@ -660,6 +680,7 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real league${c.reset} --file f.json  configure a real league from hand-entered settings
   ${c.cyan}real fp${c.reset}                 import rankings from the FantasyPros API (needs a key)
   ${c.cyan}real fp-proj${c.reset}            import projected stat lines (better than rankings)
+  ${c.cyan}real check${c.reset}              which scoring rules the valuation model actually feeds
   ${c.cyan}real fp-csv --file <f>${c.reset}  import a FantasyPros rankings CSV export (the full board)
   ${c.cyan}real fp-probe${c.reset}           diagnose the FantasyPros endpoint shape
   ${c.cyan}real fp-page${c.reset}            find the undocumented paging parameter

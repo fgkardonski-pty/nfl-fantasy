@@ -210,3 +210,50 @@ test('an unknown position yields zero rather than throwing', () => {
   assert.deepEqual(archetypeStatLine('PUNTER', 1), {});
   assert.equal(expectedPointsAtRank('PUNTER', 1, STANDARD), 0);
 });
+
+// ---------------------------------------------------------------------------
+// Scoring coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * The defect this exists to catch, stated plainly: a league scored tackles for
+ * loss at a point each, fourth-down stops at a point, and points allowed in
+ * buckets. All three were transcribed into its configuration correctly. The
+ * defense archetype supplied none of those keys, so the scoring loop had
+ * nothing to multiply and produced zero for every one — and defenses were
+ * priced at a third of their worth through an entire draft.
+ *
+ * Re-reading the rules would never have found it. The rules were right. Only
+ * asking whether anything FEEDS them finds it, so that question is a test.
+ */
+test('every scoring rule the defense archetype needs is actually supplied', async () => {
+  const { uncoveredScoringRules } = await import('../src/engine/statline.mjs');
+  const scoring = {
+    def_sack: 2, def_int: 2, def_fum_rec: 2, def_td: 6,
+    def_tfl: 1, def_4th_down_stop: 1,
+    def_pa_0: 16, def_pa_1_6: 8, def_pa_7_13: 6, def_pa_14_20: 2, def_pa_35p: -6,
+  };
+  const gaps = uncoveredScoringRules(scoring).map((g) => g.stat);
+  for (const key of Object.keys(scoring)) {
+    assert.ok(!gaps.includes(key), `${key} scores points but nothing feeds it`);
+  }
+});
+
+test('a rule nothing supplies is reported rather than silently ignored', async () => {
+  const { uncoveredScoringRules } = await import('../src/engine/statline.mjs');
+  const gaps = uncoveredScoringRules({ rush_yd: 0.1, completely_invented_stat: 5 });
+  assert.deepEqual(gaps.map((g) => g.stat), ['completely_invented_stat']);
+  assert.equal(gaps[0].points, 5);
+});
+
+test('the biggest-scoring gaps are reported first', async () => {
+  const { uncoveredScoringRules } = await import('../src/engine/statline.mjs');
+  const gaps = uncoveredScoringRules({ tiny_missing: 0.1, huge_missing: 9, mid_missing: 2 });
+  assert.deepEqual(gaps.map((g) => g.stat), ['huge_missing', 'mid_missing', 'tiny_missing']);
+});
+
+test('documentation keys and zero-valued rules are not reported as gaps', async () => {
+  const { uncoveredScoringRules } = await import('../src/engine/statline.mjs');
+  const gaps = uncoveredScoringRules({ _note: 'a comment', def_pa_21_27: 0, rush_yd: 0.1 });
+  assert.deepEqual(gaps, [], 'neither a note nor a rule worth nothing is a defect');
+});

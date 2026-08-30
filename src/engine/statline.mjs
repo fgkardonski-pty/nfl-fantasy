@@ -286,6 +286,46 @@ export function expectedScore(statLine, scoring) {
 }
 
 /**
+ * Which of a league's scoring rules the archetypes never exercise.
+ *
+ * This exists because of a defect it would have caught immediately. A league
+ * scoring tackles for loss at a point each, fourth-down stops at a point, and
+ * points allowed in buckets had all three transcribed correctly into its
+ * configuration — and the defense archetype supplied none of those keys, so the
+ * scoring loop had nothing to multiply and silently produced zero. Defenses
+ * were priced at a third of their worth for an entire draft.
+ *
+ * The rules were right and the stat lines were incomplete, which is a gap no
+ * amount of re-reading the rules would reveal: it only shows when you ask
+ * whether anything actually feeds them. So ask, mechanically.
+ *
+ * @returns {Array<{stat:string, points:number, positions:string[]}>} rules that
+ *          score points but that no archetype at any relevant position supplies
+ */
+export function uncoveredScoringRules(scoring = {}) {
+  const supplied = new Map();
+  for (const pos of Object.keys(ANCHORS)) {
+    for (const key of Object.keys(archetypeStatLine(pos, 1))) {
+      if (!supplied.has(key)) supplied.set(key, []);
+      supplied.get(key).push(pos);
+    }
+  }
+  // Points allowed is supplied as an average and converted into its buckets, so
+  // the tier keys are covered even though no stat line names them.
+  const TIER_KEYS = new Set(PA_TIERS.map((t) => t.key));
+
+  const out = [];
+  for (const [stat, points] of Object.entries(scoring)) {
+    if (typeof points !== 'number' || points === 0) continue;
+    if (stat.startsWith('_')) continue;                 // documentation keys
+    if (TIER_KEYS.has(stat) && supplied.has('def_pts_allowed')) continue;
+    if (supplied.has(stat)) continue;
+    out.push({ stat, points, positions: [] });
+  }
+  return out.sort((a, b) => Math.abs(b.points) - Math.abs(a.points));
+}
+
+/**
  * Empirical level correction, per position.
  *
  * The anchors are generic NFL production rates. Scored through a real league's
