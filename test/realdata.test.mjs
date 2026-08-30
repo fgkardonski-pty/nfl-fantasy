@@ -491,3 +491,62 @@ test('a missing schedule projects matchup-neutral, not zero', async () => {
   assert.ok(playing.mean > 0);
   assert.ok(!playing.components.some((c) => c.key === 'nogame' || c.key === 'noschedule'));
 });
+
+test('roster completeness names the positions a partial team cannot field', async () => {
+  // "What am I missing" has to be answerable by the app, not by recollection.
+  // Partial rosters fail quietly — six players project cleanly and come back
+  // looking like thirteen, just lower — so the gap has to be reported, and the
+  // K and DEF slots named specifically because in this league they are the
+  // largest scoring slots on the roster, not filler.
+  const { upsertMany, run } = await import('../src/db/index.mjs');
+
+  setupRealLeague({
+    leagueKey: 'test.l.complete', name: 'Completeness', season: 2026, numTeams: 2,
+    scoring: {}, myTeamName: 'Mine',
+    rosterSlots: [
+      { slot: 'QB', count: 1 }, { slot: 'RB', count: 1 }, { slot: 'W/R', count: 1 },
+      { slot: 'K', count: 1 }, { slot: 'DEF', count: 1 }, { slot: 'BN', count: 1 },
+      { slot: 'IR', count: 2 },
+    ],
+    teams: [{ name: 'Mine' }, { name: 'Theirs' }],
+  });
+
+  upsertMany('players', ['player_id', 'name', 'pos'], [
+    { player_id: 'c1', name: 'Comp QB', pos: 'QB' },
+    { player_id: 'c2', name: 'Comp RB', pos: 'RB' },
+    { player_id: 'c3', name: 'Comp K', pos: 'K' },
+    { player_id: 'c4', name: 'Comp DEF', pos: 'DEF' },
+    { player_id: 'c5', name: 'Comp WR', pos: 'WR' },
+    { player_id: 'c6', name: 'Comp WR2', pos: 'WR' },
+  ], ['player_id']);
+
+  const league = S.getLeague('test.l.complete');
+  const teams = S.getTeams('test.l.complete');
+  const mineKey = teams.find((t) => t.is_mine).team_key;
+  const theirsKey = teams.find((t) => !t.is_mine).team_key;
+
+  const put = (teamKey, ids) => upsertMany('rosters',
+    ['league_key', 'team_key', 'player_id', 'week', 'slot', 'is_starter', 'acquired'],
+    ids.map((id) => ({ league_key: 'test.l.complete', team_key: teamKey, player_id: id, week: 1, slot: 'BN', is_starter: 0, acquired: 'draft' })),
+    ['league_key', 'team_key', 'player_id', 'week']);
+
+  put(mineKey, ['c1', 'c2', 'c5']);                          // no K, no DEF
+  put(theirsKey, ['c1', 'c2', 'c3', 'c4', 'c5', 'c6']);       // full
+
+  const r = S.rosterCompleteness(league, { week: 1 });
+  assert.equal(r.rosterSize, 6, 'IR does not count toward a roster we must fill');
+
+  const mine = r.mine;
+  assert.equal(mine.have, 3);
+  assert.equal(mine.complete, false);
+  assert.deepEqual(mine.missingPositions.sort(), ['DEF', 'K']);
+
+  const theirs = r.teams.find((t) => !t.is_mine);
+  assert.equal(theirs.complete, true);
+  assert.deepEqual(theirs.missingPositions, [], 'a full roster is missing nothing');
+
+  // A flex is not evidence that any one position is absent, so it must never
+  // appear in the missing list — only slots with a single eligible position do.
+  assert.ok(!mine.missingPositions.includes('W/R'));
+  run("DELETE FROM rosters WHERE league_key = 'test.l.complete'");
+});

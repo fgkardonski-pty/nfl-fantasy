@@ -122,6 +122,11 @@ export function buildApi() {
     });
   });
 
+  r.get('/api/rosters', ({ query }) => {
+    const league = requireLeague(query);
+    return S.rosterCompleteness(league, { week: int(query.week, league.current_week) });
+  });
+
   r.get('/api/stream', ({ query }) => {
     const league = requireLeague(query);
     return S.streamDefenses(league, {

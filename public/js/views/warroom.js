@@ -94,6 +94,8 @@ export async function render(root, ctx) {
     alternatives(decision, rec),
 
     h('div.section-head', h('h3', 'Bench')),
+    partialRosterWarning(data.completeness),
+
     benchTable(data.roster, rec.lineup),
 
     opponent ? frag(
@@ -262,4 +264,39 @@ function notReady(d) {
       h('h3', `${d.opponent?.name ?? 'Your opponent'} has no saved roster`),
       h('p', 'Your own lineup can still be optimised for expected points, but win probability needs both sides. Saving the full draft board fills in every team at once.')),
   );
+}
+
+
+/**
+ * Says out loud when a projection is computed off half a roster.
+ *
+ * Partial rosters fail quietly: six players project cleanly and come back
+ * looking exactly like thirteen, just lower, with nothing in the output saying
+ * which. And the empty slots are not interchangeable — this league scores
+ * defenses far above the Yahoo default, so a missing K and DEF is not a little
+ * low, it is the largest single scoring slot on the roster absent.
+ */
+function partialRosterWarning(c) {
+  if (!c) return null;
+  const mine = c.mine, opp = c.opponent;
+  if ((!mine || mine.complete) && (!opp || opp.complete)) return null;
+
+  const line = (t, who) => {
+    if (!t || t.complete) return null;
+    const pos = t.missingPositions.length
+      ? ` — no ${t.missingPositions.join(', ')}`
+      : '';
+    return h('li', h('b', who), `: ${t.have} of ${t.size} players saved${pos}.`);
+  };
+
+  return h('div.card.warn',
+    h('div.row-flex', badge('PARTIAL ROSTERS', 'warn'),
+      h('h3', 'These projections are missing players')),
+    h('ul',
+      line(mine, 'Your team'),
+      line(opp, 'Your opponent')),
+    h('p.mute.xs', 'An unfilled kicker and defense cost more here than the count suggests: a complete team'
+      + ' observed in week 1 projected 150.18, of which its kicker and defense were 41.24 — 27% of the total,'
+      + ' with the defense alone outscoring every skill starter but the quarterback. Add the missing players'
+      + ' to the "rosters" block of the league config and re-run the league setup.'));
 }

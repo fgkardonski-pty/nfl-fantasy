@@ -8,7 +8,7 @@
 import { all, get, j, meta, upsertMany, run } from './db/index.mjs';
 import config from './config.mjs';
 import { DEFAULT_SCORING, scoreStatLine, describeScoring } from './engine/scoring.mjs';
-import { startingSlots, expandSlots, POSITIONS } from './engine/roster.mjs';
+import { startingSlots, expandSlots, POSITIONS, eligiblePositions } from './engine/roster.mjs';
 import { projectPlayer, MODEL_VERSION, profile as projProfile } from './engine/projections.mjs';
 import { optimalLineup } from './engine/optimizer.mjs';
 import { simulateMatchup, simulateSeason, teamWeekDistribution, roundRobinSchedule } from './engine/simulate.mjs';
@@ -636,9 +636,18 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
     correlationLoad: round(cand.correlationLoad ?? 0, 3),
   }));
 
+  // Carried on every response so the number is never read as a complete team's
+  // projection when it is six players' worth.
+  const completeness = rosterCompleteness(league, { week });
   return {
     week,
     ready: true,
+    completeness: {
+      mine: completeness.mine,
+      opponent: completeness.teams.find((t) => t.team_key === oppKey) ?? null,
+      partialTeams: completeness.partialTeams,
+      rosterSize: completeness.rosterSize,
+    },
     me: { ...me, projection: round(decision.recommended.mean, 1) },
     opponent: opp ? { ...opp, projection: round(sim.oppMean, 1), source: oppSource } : null,
     opponentSource: oppSource,
@@ -1076,4 +1085,72 @@ function defenseUnitLine(playerId, season, week) {
   }
   for (const k of Object.keys(sum)) sum[k] /= rows.length;
   return Object.keys(sum).length ? sum : null;
+}
+
+// ---------------------------------------------------------------------------
+// Roster completeness
+// ---------------------------------------------------------------------------
+
+/**
+ * How much of each team's roster the database actually holds.
+ *
+ * Partial rosters are the platform's most dangerous input, because they fail
+ * quietly: every projection, win probability and playoff number computes
+ * cleanly off six players and comes back looking exactly like one computed off
+ * thirteen, just lower. Nothing in the output says which.
+ *
+ * The empty slots are not interchangeable either. This league scores defenses
+ * far above the Yahoo default, and a real week-1 example makes the point: a
+ * complete team here projects 150.18, of which its kicker and defense are 41.24
+ * — 27 percent — and its defense alone outscores every skill starter but the
+ * quarterback. A team missing those two slots is not a little low, it is
+ * missing the largest single scoring slot it has.
+ */
+export function rosterCompleteness(league, { week = league.current_week } = {}) {
+  const required = [];
+  for (const { slot, count } of league.rosterSlots ?? []) {
+    if (slot === 'IR') continue;
+    for (let i = 0; i < count; i++) required.push(slot);
+  }
+  const size = required.length;
+  // Positions a starting lineup cannot be filled without. Only slots with a
+  // SINGLE eligible position count: a flex can be covered several ways, so an
+  // empty one is not evidence that any particular position is missing, whereas
+  // an empty K or DEF slot names exactly what is absent.
+  const needPos = new Set(
+    league.slots
+      .map((slot) => eligiblePositions(slot))
+      .filter((elig) => elig.length === 1)
+      .map((elig) => elig[0])
+  );
+
+  const teams = getTeams(league.league_key).map((t) => {
+    const roster = rosterOf(league.league_key, t.team_key, week);
+    const have = new Set(roster.map((p) => p.pos));
+    const missingPos = [...needPos].filter((pos) => !have.has(pos));
+    return {
+      team_key: t.team_key,
+      name: t.name,
+      is_mine: !!t.is_mine,
+      have: roster.length,
+      size,
+      missing: Math.max(0, size - roster.length),
+      // Named separately because an unfilled K or DEF costs far more here than
+      // an unfilled bench spot, and the count alone cannot show that.
+      missingPositions: missingPos,
+      complete: roster.length >= size,
+    };
+  });
+
+  const partial = teams.filter((t) => !t.complete);
+  return {
+    week,
+    rosterSize: size,
+    teams,
+    complete: partial.length === 0,
+    partialTeams: partial.length,
+    playersHeld: teams.reduce((a, t) => a + t.have, 0),
+    playersExpected: teams.length * size,
+    mine: teams.find((t) => t.is_mine) ?? null,
+  };
 }

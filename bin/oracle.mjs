@@ -165,6 +165,32 @@ const COMMANDS = {
     }
   },
 
+  rosters(opts) {
+    const l = league(opts);
+    const r = S.rosterCompleteness(l, { week: Number(opts.week ?? l.current_week) });
+    rule(`ROSTER COMPLETENESS — week ${r.week} · ${r.playersHeld} of ${r.playersExpected} players held`);
+    if (r.complete) { out(`  ${c.green}every team is complete.${c.reset}`); return; }
+
+    out(`  ${c.grey}${pad('TEAM', 24)}${rpad('HAVE', 6)}  MISSING STARTING POSITIONS${c.reset}`);
+    for (const t of [...r.teams].sort((a, b) => a.have - b.have)) {
+      const col = t.complete ? c.green : t.have < r.rosterSize / 2 ? c.red : c.yellow;
+      const mark = t.is_mine ? `${c.bold}*${c.reset}` : ' ';
+      const miss = t.missingPositions.length
+        ? `${c.red}${t.missingPositions.join(', ')}${c.reset}`
+        : `${c.grey}bench only${c.reset}`;
+      out(`  ${mark}${c.white}${pad(t.name, 23)}${c.reset}${col}${rpad(`${t.have}/${t.size}`, 6)}${c.reset}  ${miss}`);
+    }
+    // The point that a raw count cannot make on its own.
+    const noK = r.teams.filter((t) => t.missingPositions.includes('K')).length;
+    const noD = r.teams.filter((t) => t.missingPositions.includes('DEF')).length;
+    if (noK || noD) {
+      out(`\n  ${c.yellow}${noD} teams have no defense and ${noK} no kicker.${c.reset}`);
+      out(`  ${c.grey}Those two slots are not filler in this league: a complete team observed in week 1${c.reset}`);
+      out(`  ${c.grey}projected 150.18, of which its kicker and defense were 41.24 — 27%.${c.reset}`);
+    }
+    out(`\n  ${c.grey}Fill teams in via the "rosters" block of the league config, then re-run ${c.cyan}real league${c.reset}${c.grey}.${c.reset}`);
+  },
+
   stream(opts) {
     const l = league(opts);
     const week = Number(opts.week ?? l.current_week);
@@ -807,6 +833,7 @@ ${c.bold}EVERY WEEK${c.reset}
   ${c.cyan}waivers${c.reset} [--limit N]     ranked targets with recommended FAAB bids
   ${c.cyan}trades${c.reset}  [--limit N]     win-win trades and value arbitrage, with the pitch
   ${c.cyan}stream${c.reset}  [--week N]      defenses to stream, ranked by the offence they face
+  ${c.cyan}rosters${c.reset}                 how much of each team's roster the database actually holds
   ${c.cyan}intel${c.reset}                   rival dossiers and predicted waiver claims
   ${c.cyan}outlook${c.reset} [--sims N]      playoff and championship odds for every team
 
