@@ -226,19 +226,113 @@ export function setupRealLeague(cfg) {
   };
   upsertMany('leagues', Object.keys(league), [league], ['league_key']);
 
-  const teamKey = `${leagueKey}.t.1`;
-  const team = {
-    league_key: leagueKey, team_key: teamKey, team_id: 1,
-    name: cfg.myTeamName ?? 'My Team', manager: 'You', is_mine: 1,
-    faab_remaining: cfg.faabBudget ?? 100, waiver_priority: null,
-    wins: 0, losses: 0, ties: 0, points_for: 0, points_against: 0,
-    moves: 0, trade_count: 0, logo: null,
-  };
-  upsertMany('teams', Object.keys(team), [team], ['league_key', 'team_key']);
+  // The league is sixteen real teams in two divisions, not one row for us and
+  // fifteen anonymous placeholders. Every downstream question — who is on the
+  // waiver wire ahead of us, who we actually play in week 1, which teams our
+  // playoff path runs through — is unanswerable without them.
+  const divisionOf = new Map();
+  for (const d of cfg.divisions ?? []) {
+    for (const name of d.teams ?? []) divisionOf.set(name, d.name);
+  }
+
+  const myName = cfg.myTeamName ?? 'My Team';
+  const declared = cfg.teams?.length
+    ? cfg.teams
+    : [{ name: myName, waiverPriority: null }];
+  // Our own team must exist even if it is missing from the declared list, or
+  // the app has no "me" to build a lineup for.
+  if (!declared.some((t) => t.name === myName)) declared.push({ name: myName, waiverPriority: null });
+
+  // Team keys are assigned once and never reshuffled. Rosters, draft picks and
+  // matchups all reference them, so re-running this command after editing the
+  // config — adding a division, fixing a waiver number — must not silently
+  // hand our drafted roster to a different manager. Existing names keep the key
+  // they already have; only genuinely new names get a fresh index.
+  const keyOf = new Map();
+  const existing = all('SELECT team_key, team_id, name, is_mine FROM teams WHERE league_key = ?', [leagueKey]);
+  const existingByName = new Map(existing.map((r) => [r.name, r]));
+  let nextId = existing.reduce((m, r) => Math.max(m, r.team_id ?? 0), 0);
+
+  // Resolve every declared name to a key in two passes, because a rename and a
+  // new team are indistinguishable from the name alone. Names bind first — an
+  // exact match is unambiguous evidence. Only then may our own team fall back
+  // to whichever row is currently flagged is_mine, which is what makes
+  // renaming our team (McGiver -> Frank the Tank) an update rather than a
+  // second team with our roster stranded on the first. The claimed set stops
+  // that fallback from stealing a key another declared name already owns.
+  const claimed = new Set();
+  const resolved = new Map();
+  for (const t of declared) {
+    const prior = existingByName.get(t.name);
+    if (prior && !claimed.has(prior.team_key)) {
+      claimed.add(prior.team_key);
+      resolved.set(t.name, prior);
+    }
+  }
+  if (!resolved.has(myName)) {
+    const mineRow = existing.find((r) => r.is_mine && !claimed.has(r.team_key));
+    if (mineRow) {
+      claimed.add(mineRow.team_key);
+      resolved.set(myName, mineRow);
+      log.info(`our team renamed: "${mineRow.name}" -> "${myName}" (keeping ${mineRow.team_key}, so the roster follows)`);
+    }
+  }
+
+  const teamRows = declared.map((t) => {
+    const prior = resolved.get(t.name);
+    const teamId = prior?.team_id ?? ++nextId;
+    const teamKey = prior?.team_key ?? `${leagueKey}.t.${teamId}`;
+    keyOf.set(t.name, teamKey);
+    return {
+      league_key: leagueKey, team_key: teamKey, team_id: teamId,
+      name: t.name, manager: t.name === myName ? 'You' : (t.manager ?? null),
+      is_mine: t.name === myName ? 1 : 0,
+      faab_remaining: cfg.faabBudget ?? 100,
+      waiver_priority: t.waiverPriority ?? null,
+      wins: 0, losses: 0, ties: 0, points_for: 0, points_against: 0,
+      moves: 0, trade_count: 0, logo: null,
+      division: t.division ?? divisionOf.get(t.name) ?? null,
+    };
+  });
+  // Exactly one team is ours. If a previous config named a different one, its
+  // flag has to be cleared in the same breath or myTeam() picks arbitrarily.
+  run('UPDATE teams SET is_mine = 0 WHERE league_key = ?', [leagueKey]);
+  upsertMany('teams', Object.keys(teamRows[0]), teamRows, ['league_key', 'team_key']);
+
+  // Rows the config no longer mentions are reported, never deleted: they may
+  // still own rosters, draft picks and matchups, and quietly dropping a team
+  // would leave those pointing at nothing.
+  const stale = existing.filter((r) => !claimed.has(r.team_key) && !teamRows.some((n) => n.team_key === r.team_key));
+  if (stale.length) {
+    log.warn(`teams in the database but not in the config, left untouched: ${stale.map((r) => `${r.name} (${r.team_key})`).join(', ')}`);
+  }
+
+  // Yahoo's real pairings, for whatever weeks the operator has entered. These
+  // are the only matchups the app is allowed to call fact.
+  const matchupRows = [];
+  const unknownTeams = new Set();
+  for (const [week, pairs] of Object.entries(cfg.schedule ?? {})) {
+    const w = Number(week);
+    if (!Number.isFinite(w)) continue;
+    for (const [a, b] of pairs) {
+      const ka = keyOf.get(a), kb = keyOf.get(b);
+      if (!ka) unknownTeams.add(a);
+      if (!kb) unknownTeams.add(b);
+      if (!ka || !kb) continue;
+      matchupRows.push({ league_key: leagueKey, week: w, team_key: ka, opp_team_key: kb, points: null, projected: null, is_playoffs: w >= (cfg.playoffStartWeek ?? 15) ? 1 : 0, source: 'config' });
+      matchupRows.push({ league_key: leagueKey, week: w, team_key: kb, opp_team_key: ka, points: null, projected: null, is_playoffs: w >= (cfg.playoffStartWeek ?? 15) ? 1 : 0, source: 'config' });
+    }
+  }
+  if (matchupRows.length) {
+    upsertMany('matchups', Object.keys(matchupRows[0]), matchupRows, ['league_key', 'week', 'team_key']);
+  }
+  if (unknownTeams.size) {
+    log.warn(`schedule names not in the team list, ignored: ${[...unknownTeams].join(', ')}`);
+  }
 
   meta.set('active_league', leagueKey);
-  log.info(`real league configured: ${league.name} (${league.num_teams} teams)`);
-  return { league_key: leagueKey };
+  log.info(`real league configured: ${league.name} — ${teamRows.length} teams, ${matchupRows.length / 2} known matchups`);
+  return { league_key: leagueKey, teams: teamRows.length, matchups: matchupRows.length / 2, unknownTeams: [...unknownTeams], staleTeams: stale.map((r) => r.name) };
 }
 
 /**
@@ -418,4 +512,110 @@ function matchToLocalPlayers(providerRows, buildExtra) {
     rows.push({ player_id: hit.player_id, ...buildExtra(r, i) });
   });
   return { rows, unmatched };
+}
+
+// ---------------------------------------------------------------------------
+// Weekly stats and projections from Sleeper
+// ---------------------------------------------------------------------------
+
+/**
+ * Import one week of real stat lines (or Sleeper's projections for a week that
+ * has not been played) into player_stats / player_usage.
+ *
+ * This is the piece that turns the projection engine on. Until a week has been
+ * played the platform has no per-player evidence at all, so every player at a
+ * position is priced off the same positional archetype — which is why the War
+ * Room, waiver and trade views currently rank teammates identically. Real
+ * weekly stats break that tie.
+ *
+ * Matching is by `sleeper_id`, which was written when the player universe was
+ * seeded from the same provider, so there is no name-matching step and no
+ * fuzzy-match risk here at all.
+ *
+ * @param {Object} opts
+ * @param {number} opts.season
+ * @param {number} opts.week
+ * @param {'stats'|'projections'} [opts.kind]
+ */
+export async function importWeeklyFromSleeper({ season, week, kind = 'stats' } = {}) {
+  const blobs = await sleeper.weeklyBlobs({ season, week, kind });
+  if (!blobs) {
+    return { ok: false, note: `Sleeper returned nothing for ${kind} ${season} week ${week}.`, written: 0 };
+  }
+
+  const known = all('SELECT player_id, sleeper_id, pos FROM players WHERE sleeper_id IS NOT NULL');
+  const bySleeper = new Map(known.map((p) => [String(p.sleeper_id), p]));
+
+  const statRows = [];
+  const usageRows = [];
+  let unknownIds = 0;
+  let empty = 0;
+
+  for (const [sleeperId, raw] of Object.entries(blobs)) {
+    const local = bySleeper.get(String(sleeperId));
+    if (!local) { unknownIds++; continue; }
+    const stats = sleeper.mapSleeperStats(raw, local.pos);
+    if (!Object.keys(stats).length) { empty++; continue; }
+    statRows.push({
+      player_id: local.player_id, season, week,
+      opponent: raw.opponent ?? null,
+      stats: JSON.stringify(stats),
+    });
+    const usage = sleeper.mapSleeperUsage(raw);
+    if (usage) usageRows.push({ player_id: local.player_id, season, week, ...usage });
+  }
+
+  if (statRows.length) {
+    upsertMany('player_stats', ['player_id', 'season', 'week', 'opponent', 'stats'],
+      statRows, ['player_id', 'season', 'week']);
+  }
+  if (usageRows.length) {
+    upsertMany('player_usage', Object.keys(usageRows[0]), usageRows, ['player_id', 'season', 'week']);
+  }
+
+  log.info(`sleeper ${kind} ${season} wk${week}: ${statRows.length} players written, ${unknownIds} unrecognised ids, ${empty} blank lines`);
+  return {
+    ok: true, kind, season, week,
+    written: statRows.length,
+    usage: usageRows.length,
+    unknownIds, empty,
+    provided: Object.keys(blobs).length,
+  };
+}
+
+/**
+ * Probe the Sleeper weekly endpoints without writing anything.
+ *
+ * Exists because the shape of this feed is the one part of the importer that
+ * cannot be verified from a development container: Sleeper is unreachable from
+ * ours (egress policy refuses the connection outright), so the stat-key mapping
+ * above is written from Sleeper's published documentation rather than from an
+ * observed response. This command shows what actually came back and, crucially,
+ * which returned keys the mapping does NOT understand — so a wrong or renamed
+ * key is visible immediately instead of quietly scoring zero.
+ */
+export async function probeSleeperWeekly({ season, week, kind = 'stats' } = {}) {
+  const blobs = await sleeper.weeklyBlobs({ season, week, kind });
+  if (!blobs) return { ok: false, note: 'no response (network blocked, or the week has no data yet)' };
+
+  const ids = Object.keys(blobs);
+  const seen = new Map();
+  for (const raw of Object.values(blobs)) {
+    for (const [k, v] of Object.entries(raw ?? {})) {
+      if (!Number.isFinite(Number(v)) || Number(v) === 0) continue;
+      seen.set(k, (seen.get(k) ?? 0) + 1);
+    }
+  }
+  const mapped = [], unmapped = [];
+  const derivedKeys = new Set(['kr_yd', 'pr_yd', 'kr_td', 'pr_td', 'pts_allow', 'yds_allow',
+    'off_snp', 'tm_off_snp', 'rec_tgt', 'tm_pass_att', 'tm_rush_att', 'rush_rz_att']);
+  for (const [k, n] of [...seen].sort((a, b) => b[1] - a[1])) {
+    if (k in sleeper.SLEEPER_STAT_MAP || derivedKeys.has(k)) mapped.push([k, n]);
+    else unmapped.push([k, n]);
+  }
+
+  const linked = all('SELECT count(*) c FROM players WHERE sleeper_id IS NOT NULL')[0]?.c ?? 0;
+  const matched = ids.filter((id) => get('SELECT 1 FROM players WHERE sleeper_id = ?', [String(id)])).length;
+
+  return { ok: true, kind, season, week, players: ids.length, linked, matched, mapped, unmapped };
 }

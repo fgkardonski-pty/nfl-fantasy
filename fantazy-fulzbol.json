@@ -5,7 +5,7 @@
   "name": "FANTAZY FULZBOL",
   "season": 2026,
   "numTeams": 16,
-  "myTeamName": "McGiver",
+  "myTeamName": "Frank the Tank",
 
   "_roster": "Yahoo lists: QB, WR, RB, TE, W/T, W/R, K, DEF, BN x5, IR x2. Note TWO separate flex slots with different eligibility, not one combined flex.",
   "rosterSlots": [
@@ -25,6 +25,37 @@
   "numPlayoffTeams": 8,
   "playoffStartWeek": 15,
   "endWeek": 17,
+
+  "_divisions": "Two divisions of eight, read off the Yahoo standings page. Division matters for scheduling (teams play inside the division more often) and, in most Yahoo setups, for playoff seeding.",
+  "divisions": [
+    { "name": "Division 1", "teams": ["Guashingtonians", "McGiver", "MISSION SUBMISSION", "Datsun", "PUSHERO", "The Ternichian", "Los Acereros", "Ray Finkle"] },
+    { "name": "Division 2", "teams": ["Lux Valebergs", "Fly Agaric", "Walker Texas Ranger", "Frank the Tank", "Alonso's", "VelociRaptor", "Count Snoop the Loop", "INGLOURIOUS BASTERDS"] }
+  ],
+
+  "_teams": "waiverPriority is the rolling waiver order shown on the standings page. Lower number claims first. Ours is 13 of 16 — near the back, which is a real constraint on the streaming strategy: we will lose most contested claims and should target players nobody else wants yet rather than the obvious add.",
+  "teams": [
+    { "name": "Count Snoop the Loop",  "division": "Division 2", "waiverPriority": 1 },
+    { "name": "Guashingtonians",       "division": "Division 1", "waiverPriority": 2 },
+    { "name": "Ray Finkle",            "division": "Division 1", "waiverPriority": 3 },
+    { "name": "McGiver",               "division": "Division 1", "waiverPriority": 4 },
+    { "name": "INGLOURIOUS BASTERDS",  "division": "Division 2", "waiverPriority": 5 },
+    { "name": "Walker Texas Ranger",   "division": "Division 2", "waiverPriority": 6 },
+    { "name": "Datsun",                "division": "Division 1", "waiverPriority": 7 },
+    { "name": "Lux Valebergs",         "division": "Division 2", "waiverPriority": 8 },
+    { "name": "Fly Agaric",            "division": "Division 2", "waiverPriority": 9 },
+    { "name": "PUSHERO",               "division": "Division 1", "waiverPriority": 10 },
+    { "name": "Los Acereros",          "division": "Division 1", "waiverPriority": 11 },
+    { "name": "Alonso's",              "division": "Division 2", "waiverPriority": 12 },
+    { "name": "Frank the Tank",        "division": "Division 2", "waiverPriority": 13 },
+    { "name": "MISSION SUBMISSION",    "division": "Division 1", "waiverPriority": 14 },
+    { "name": "VelociRaptor",          "division": "Division 2", "waiverPriority": 15 },
+    { "name": "The Ternichian",        "division": "Division 1", "waiverPriority": 16 }
+  ],
+
+  "_schedule": "Only weeks entered here are treated as the REAL schedule. Anything absent is filled by a division-aware round robin purely so the season simulation has something to run on — it is labelled as estimated in the app and must never be read as Yahoo's actual pairings. Add weeks as you read them off Yahoo; each week is a list of [home, away] name pairs.",
+  "schedule": {
+    "1": [["Frank the Tank", "Fly Agaric"]]
+  },
 
   "_waivers": "Weekly rolling list based on standings — NOT FAAB. Continuous processing. faabBudget is therefore unused for bidding; waiver priority governs claims.",
   "waiverType": "priority",
@@ -57,8 +88,8 @@
     "rec_40": 2,
     "rec_td_40": 3,
 
-    "_misc": "Return yards score 0.5/yd for skill players per the QB/RB/WR/TE tables.",
-    "ret_yd": 0.5,
+    "_misc": "CORRECTED from the manager's reading of the Yahoo tables: return yards score NOTHING for RB/WR/TE, and the QB line (10 yds/pt) is dead weight because quarterbacks do not return kicks. The only live return-yard rule in this league is the Defense/Special Teams one — 10 yards per point, i.e. def_ret_yd 0.1, plus +1 at 30 yards. Leave ret_yd at 0: setting it non-zero would silently inflate every skill player.",
+    "ret_yd": 0,
     "ret_td": 6,
     "two_pt": 2,
     "fum_lost": -2,

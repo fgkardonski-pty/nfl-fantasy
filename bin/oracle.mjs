@@ -18,7 +18,7 @@ import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextContestedPick } from '../src/engine/draft.mjs';
 import { uncoveredScoringRules } from '../src/engine/statline.mjs';
-import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros } from '../src/realdata.mjs';
+import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -638,11 +638,66 @@ const COMMANDS = {
         process.exit(1);
       }
       const cfg = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8'));
-      const { league_key } = setupRealLeague(cfg);
-      out(`${c.green}\u2713${c.reset} league configured: ${c.bold}${cfg.name}${c.reset} (${league_key})`);
+      const r = setupRealLeague(cfg);
+      out(`${c.green}\u2713${c.reset} league configured: ${c.bold}${cfg.name}${c.reset} (${r.league_key})`);
+      out(`  ${r.teams} teams${cfg.divisions?.length ? ` across ${cfg.divisions.length} divisions` : ''}, ${r.matchups} real matchup${r.matchups === 1 ? '' : 's'} entered`);
+      if (!r.matchups) {
+        out(`  ${c.yellow}!${c.reset} no real schedule entered — every opponent shown in the app is a GUESS from a round robin.`);
+        out(`    ${c.grey}Add a "schedule" block to the config as you read weeks off Yahoo.${c.reset}`);
+      } else {
+        const known = Object.keys(cfg.schedule ?? {}).sort((a, b) => a - b).join(', ');
+        out(`  ${c.grey}real weeks: ${known}. Every other week is an estimate and is labelled as one in the app.${c.reset}`);
+      }
+      if (r.unknownTeams?.length) {
+        out(`  ${c.red}!${c.reset} schedule names not in the team list, ignored: ${r.unknownTeams.join(', ')}`);
+      }
       return;
     }
-    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp-csv --file <f> | fp | fp-proj | fp-probe | fp-page | adp --file <f>${c.reset}`);
+    if (sub === 'stats' || sub === 'proj-week') {
+      const kind = sub === 'stats' ? 'stats' : 'projections';
+      const season = Number(opts.season ?? config.season ?? new Date().getFullYear());
+      const week = Number(opts.week ?? 1);
+      if (!Number.isFinite(week) || week < 1) {
+        out(`${c.red}Usage:${c.reset} node bin/oracle.mjs real ${sub} --week N [--season YYYY] [--through N]`);
+        process.exit(1);
+      }
+      const through = opts.through != null ? Number(opts.through) : week;
+      let total = 0;
+      for (let w = week; w <= through; w++) {
+        const res = await importWeeklyFromSleeper({ season, week: w, kind });
+        if (!res.ok) { out(`${c.yellow}!${c.reset} week ${w}: ${res.note}`); continue; }
+        total += res.written;
+        out(`${c.green}\u2713${c.reset} ${kind} ${season} wk${w}: ${c.bold}${res.written}${c.reset} players (${res.usage} with usage), ${res.unknownIds} ids not in our player table`);
+        if (res.written === 0 && res.provided > 0) {
+          out(`  ${c.red}!${c.reset} Sleeper returned ${res.provided} players but none matched. Run ${c.cyan}real seed${c.reset} first, then ${c.cyan}real probe-week --week ${w}${c.reset}.`);
+        }
+      }
+      if (total) out(`${c.grey}Weekly evidence now feeds projections — the War Room should stop pricing teammates identically.${c.reset}`);
+      return;
+    }
+    if (sub === 'probe-week') {
+      const season = Number(opts.season ?? config.season ?? new Date().getFullYear());
+      const week = Number(opts.week ?? 1);
+      const kind = opts.kind === 'projections' ? 'projections' : 'stats';
+      const r = await probeSleeperWeekly({ season, week, kind });
+      if (!r.ok) {
+        out(`${c.red}\u2717${c.reset} ${r.note}`);
+        out(`${c.grey}If this machine can reach api.sleeper.app in a browser, the block is this process's network, not Sleeper.${c.reset}`);
+        return;
+      }
+      out(`${c.bold}Sleeper ${r.kind} ${r.season} week ${r.week}${c.reset}`);
+      out(`  players returned : ${r.players}`);
+      out(`  linked locally   : ${r.matched} of ${r.players} (we hold ${r.linked} sleeper ids)`);
+      out(`  ${c.green}mapped keys${c.reset}   : ${r.mapped.map(([k, n]) => `${k}(${n})`).join(' ') || '(none)'}`);
+      if (r.unmapped.length) {
+        out(`  ${c.yellow}unmapped keys${c.reset} : ${r.unmapped.map(([k, n]) => `${k}(${n})`).join(' ')}`);
+        out(`  ${c.grey}Unmapped keys score zero. Anything above that this league pays for is a bug — send this line back.${c.reset}`);
+      } else {
+        out(`  ${c.green}every returned key is accounted for.${c.reset}`);
+      }
+      return;
+    }
+    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp-csv --file <f> | fp | fp-proj | fp-probe | fp-page | adp --file <f> | stats --week N | proj-week --week N | probe-week --week N${c.reset}`);
     process.exit(1);
   },
 
@@ -685,6 +740,9 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real fp-probe${c.reset}           diagnose the FantasyPros endpoint shape
   ${c.cyan}real fp-page${c.reset}            find the undocumented paging parameter
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list
+  ${c.cyan}real stats${c.reset} --week N     import a played week's real stat lines from Sleeper
+  ${c.cyan}real proj-week${c.reset} --week N Sleeper's projections for a week not yet played
+  ${c.cyan}real probe-week${c.reset} --week N  show what Sleeper returns and which keys we map
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)
   ${c.cyan}news add${c.reset} "<headline>"   record news, then score it with the Claude API
   ${c.cyan}news list${c.reset}               recent news with its scored projection impact

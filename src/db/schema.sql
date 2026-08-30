@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS teams (
   moves           INTEGER DEFAULT 0,
   trade_count     INTEGER DEFAULT 0,
   logo            TEXT,
+  division        TEXT,
   PRIMARY KEY (league_key, team_key),
   FOREIGN KEY (league_key) REFERENCES leagues(league_key) ON DELETE CASCADE
 );
@@ -134,6 +135,9 @@ CREATE TABLE IF NOT EXISTS matchups (
   points       REAL,
   projected    REAL,
   is_playoffs  INTEGER DEFAULT 0,
+  -- 'yahoo' / 'config' = a real pairing. 'estimated' = generated so the season
+  -- simulation has a schedule; never present it as fact.
+  source       TEXT,
   PRIMARY KEY (league_key, week, team_key)
 );
 

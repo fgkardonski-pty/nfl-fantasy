@@ -40,6 +40,20 @@ export function getDb(dbPath = config.dbPath) {
  * here instead, guarded by what the table actually has.
  */
 const ADDED_COLUMNS = {
+  teams: {
+    // Yahoo splits this league into two divisions of eight. Division drives
+    // scheduling weight and, in most Yahoo setups, playoff seeding, so it has
+    // to survive alongside the team rather than be recomputed from a config
+    // the database may outlive.
+    division: 'TEXT',
+  },
+  matchups: {
+    // Whether this pairing was read off Yahoo or generated to give the season
+    // simulation something to run on. Without it the app cannot tell the user
+    // which of its own numbers are grounded, and an estimated opponent looks
+    // exactly like a real one.
+    source: 'TEXT',
+  },
   adp: {
     // Consensus rank, tier and positional rank, as published. ADP alone says
     // when a player leaves the board; these say how good the experts think he

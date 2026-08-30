@@ -314,3 +314,147 @@ test('valuation prices a player by his published rank, not by his ADP', async ()
   assert.match(elite.basis, /RB1/);
   run("DELETE FROM leagues WHERE league_key = 'csvtest.l.1'");
 });
+
+// ---------------------------------------------------------------------------
+// Full-league ingestion: divisions, stable keys, and the real-vs-guessed schedule
+// ---------------------------------------------------------------------------
+
+const LEAGUE16 = {
+  leagueKey: 'test.l.div', name: 'Divided League', season: 2026, numTeams: 4,
+  scoring: {}, rosterSlots: [{ slot: 'QB', count: 1 }, { slot: 'BN', count: 3 }],
+  myTeamName: 'Frank the Tank',
+  divisions: [
+    { name: 'East', teams: ['Alpha', 'Bravo'] },
+    { name: 'West', teams: ['Frank the Tank', 'Delta'] },
+  ],
+  teams: [
+    { name: 'Alpha', waiverPriority: 1 },
+    { name: 'Bravo', waiverPriority: 2 },
+    { name: 'Frank the Tank', waiverPriority: 3 },
+    { name: 'Delta', waiverPriority: 4 },
+  ],
+  schedule: { 1: [['Frank the Tank', 'Delta']] },
+};
+
+test('setupRealLeague ingests every team, its division and its waiver priority', () => {
+  const { league_key } = setupRealLeague(LEAGUE16);
+  const teams = S.getTeams(league_key);
+  assert.equal(teams.length, 4, 'the league is its whole membership, not just us');
+
+  const me = S.myTeam(league_key);
+  assert.equal(me.name, 'Frank the Tank');
+  assert.equal(teams.filter((t) => t.is_mine).length, 1, 'exactly one team is ours');
+
+  const byName = new Map(teams.map((t) => [t.name, t]));
+  assert.equal(byName.get('Alpha').division, 'East');
+  assert.equal(byName.get('Frank the Tank').division, 'West');
+  // Waiver priority is the constraint that decides whether a streaming plan is
+  // realistic at all, so it has to survive ingestion.
+  assert.equal(byName.get('Delta').waiver_priority, 4);
+});
+
+test('a real schedule week is kept as fact; the rest of the season is flagged estimated', () => {
+  const league = S.getLeague('test.l.div');
+  const sched = S.scheduleFor(league);
+
+  const wk1 = sched.find((w) => w.week === 1);
+  assert.ok(wk1, 'week 1 is present');
+  // One pairing was entered out of the two a four-team week needs, so the week
+  // is correctly reported as part-real: one known pair, the rest filled in.
+  assert.equal(wk1.knownPairs, 1);
+  assert.equal(wk1.pairs.length, 2, 'the week is completed so the simulation plays a full slate');
+  assert.equal(wk1.estimated, true, 'a partially-entered week still contains guesses');
+
+  const me = S.myTeam('test.l.div');
+  const delta = S.getTeams('test.l.div').find((t) => t.name === 'Delta');
+  const pair = wk1.pairs.find((p) => p.includes(me.team_key));
+  assert.ok(pair.includes(delta.team_key), 'we play the opponent the config names, not a generated one');
+
+  // And a week entered in full carries no guesses at all.
+  setupRealLeague({ ...LEAGUE16, schedule: { 1: [['Frank the Tank', 'Delta'], ['Alpha', 'Bravo']] } });
+  const full = S.scheduleFor(S.getLeague('test.l.div')).find((w) => w.week === 1);
+  assert.equal(full.knownPairs, 2);
+  assert.equal(full.estimated, false, 'nothing was invented for a week we entered completely');
+
+  // The whole point of the merge: one known week must not erase the other
+  // thirteen from the season simulation.
+  assert.ok(sched.length > 1, 'the rest of the regular season is still scheduled');
+  assert.ok(sched.filter((w) => w.week > 1).every((w) => w.estimated),
+    'every week we have not entered is marked as a guess');
+});
+
+test('opponentForWeek distinguishes a real opponent from an invented one', () => {
+  const league = S.getLeague('test.l.div');
+  const me = S.myTeam('test.l.div');
+
+  const wk1 = S.opponentForWeek(league, me.team_key, 1);
+  assert.equal(wk1.source, 'config', 'week 1 came off the league settings');
+  assert.ok(wk1.oppKey);
+
+  // Week 2 was never entered. Returning an opponent is fine — the season
+  // simulation needs one — but presenting it as fact is the bug this replaced:
+  // the app previously showed a team name with no indication it was a guess.
+  const wk2 = S.opponentForWeek(league, me.team_key, 2);
+  assert.equal(wk2.source, 'estimated');
+});
+
+test('re-running the config after renaming our team keeps the same team key', () => {
+  const before = S.myTeam('test.l.div');
+
+  setupRealLeague({
+    ...LEAGUE16,
+    myTeamName: 'Frank the Tank II',
+    teams: LEAGUE16.teams.map((t) => (t.name === 'Frank the Tank' ? { ...t, name: 'Frank the Tank II' } : t)),
+    divisions: [
+      { name: 'East', teams: ['Alpha', 'Bravo'] },
+      { name: 'West', teams: ['Frank the Tank II', 'Delta'] },
+    ],
+    schedule: { 1: [['Frank the Tank II', 'Delta']] },
+  });
+
+  const after = S.myTeam('test.l.div');
+  assert.equal(after.name, 'Frank the Tank II');
+  // The key is what rosters, draft picks and matchups reference. If a rename
+  // minted a new key our drafted roster would be stranded on a team we no
+  // longer own — silently, with the app still looking correct.
+  assert.equal(after.team_key, before.team_key, 'a rename updates in place');
+  assert.equal(S.getTeams('test.l.div').filter((t) => t.is_mine).length, 1);
+});
+
+test('an existing team keeping its name is never re-pointed by a config edit', () => {
+  // The failure this guards: keys assigned by array index, so adding or
+  // reordering a team in the config hands every roster to the wrong manager.
+  const keysBefore = new Map(S.getTeams('test.l.div').map((t) => [t.name, t.team_key]));
+
+  setupRealLeague({
+    ...LEAGUE16,
+    myTeamName: 'Frank the Tank II',
+    teams: [
+      { name: 'Echo', waiverPriority: 5 },          // a new team, inserted first
+      { name: 'Delta', waiverPriority: 4 },
+      { name: 'Bravo', waiverPriority: 2 },
+      { name: 'Alpha', waiverPriority: 1 },
+      { name: 'Frank the Tank II', waiverPriority: 3 },
+    ],
+    divisions: LEAGUE16.divisions,
+    schedule: {},
+  });
+
+  const keysAfter = new Map(S.getTeams('test.l.div').map((t) => [t.name, t.team_key]));
+  for (const [name, key] of keysBefore) {
+    if (name === 'Frank the Tank') continue;
+    assert.equal(keysAfter.get(name), key, `${name} kept its key despite the reorder`);
+  }
+  assert.ok(keysAfter.get('Echo'), 'the genuinely new team got a key of its own');
+  assert.notEqual(keysAfter.get('Echo'), keysBefore.get('Alpha'));
+});
+
+test('a schedule naming a team that does not exist is reported, not silently dropped', () => {
+  const r = setupRealLeague({
+    ...LEAGUE16,
+    leagueKey: 'test.l.badsched',
+    schedule: { 1: [['Frank the Tank', 'A Team That Never Existed']] },
+  });
+  assert.deepEqual(r.unknownTeams, ['A Team That Never Existed']);
+  assert.equal(r.matchups, 0, 'the bad pairing is not written as if it were real');
+});

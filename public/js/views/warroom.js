@@ -29,6 +29,11 @@ export async function render(root, ctx) {
           : 'No opponent scheduled this week')
       ),
       h('div.row-flex',
+        // An opponent the schedule generator invented must never look like one
+        // Yahoo published — every number on this page is conditioned on it.
+        data.opponentSource === 'estimated'
+          ? badge('OPPONENT ESTIMATED', 'warn')
+          : null,
         badge(`${sim.sims.toLocaleString()} simulations`, 'dim'),
         badge(posture.stance.toUpperCase(), posture.stance === 'favourite' ? 'ok' : posture.stance === 'underdog' ? 'bad' : 'warn')
       )
@@ -92,7 +97,9 @@ export async function render(root, ctx) {
     opponent ? frag(
       h('div.section-head',
         h('h3', `${opponent.name} — projected lineup`),
-        h('span.note', 'their optimal lineup, which is what we simulate against')),
+        h('span.note', data.opponentSource === 'estimated'
+          ? 'ESTIMATED opponent — Yahoo\u2019s week has not been entered, so this pairing is a guess from a division-aware round robin'
+          : 'their optimal lineup, which is what we simulate against')),
       lineupTable(data.oppLineup, { compact: true })
     ) : null
   );

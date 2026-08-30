@@ -390,26 +390,116 @@ export function currentMatchup(leagueKey, teamKey, week) {
   );
 }
 
+/**
+ * Who we play this week, and how confident we are about it.
+ *
+ * Returns `{ oppKey, source }` where source is 'config'/'yahoo' for a pairing
+ * that came off Yahoo and 'estimated' for one the schedule generator invented.
+ * The app previously had no opponent at all and displayed our own team name in
+ * the slot, which read as though the league had told it something. Either
+ * answer is fine to show; passing an estimate off as fact is not.
+ */
+export function opponentForWeek(league, teamKey, week) {
+  const row = currentMatchup(league.league_key, teamKey, week);
+  if (row?.opp_team_key && row.source !== 'estimated') {
+    return { oppKey: row.opp_team_key, source: row.source ?? 'yahoo' };
+  }
+  const wk = scheduleFor(league).find((w) => w.week === week);
+  for (const [a, b] of wk?.pairs ?? []) {
+    if (a === teamKey) return { oppKey: b, source: 'estimated' };
+    if (b === teamKey) return { oppKey: a, source: 'estimated' };
+  }
+  return { oppKey: null, source: 'unknown' };
+}
+
+/**
+ * The regular-season schedule, week by week.
+ *
+ * Real pairings and generated ones are merged rather than chosen between: this
+ * league's schedule is entered a few weeks at a time as they are read off
+ * Yahoo, so requiring all-or-nothing would mean one known week silently
+ * erasing the other thirteen from the season simulation. Every week carries
+ * `estimated`, and callers that show a schedule to the user must say so.
+ */
 export function scheduleFor(league) {
+  const lastWeek = (league.playoff_start_week ?? 15) - 1;
   const rows = all(
-    'SELECT week, team_key, opp_team_key FROM matchups WHERE league_key = ? ORDER BY week',
+    'SELECT week, team_key, opp_team_key, source FROM matchups WHERE league_key = ? ORDER BY week',
     [league.league_key]
   );
-  if (!rows.length) {
-    const keys = getTeams(league.league_key).map((t) => t.team_key);
-    return roundRobinSchedule(keys, (league.playoff_start_week ?? 15) - 1);
-  }
-  const byWeek = new Map();
+
+  const known = new Map();
   for (const r of rows) {
-    if (!byWeek.has(r.week)) byWeek.set(r.week, new Set());
-    const seen = byWeek.get(r.week);
-    const pairKey = [r.team_key, r.opp_team_key].sort().join('~');
-    seen.add(pairKey);
+    if (r.source === 'estimated') continue;
+    if (!r.opp_team_key) continue;
+    if (!known.has(r.week)) known.set(r.week, new Set());
+    known.get(r.week).add([r.team_key, r.opp_team_key].sort().join('~'));
   }
-  return [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(([week, pairs]) => ({
-    week,
-    pairs: [...pairs].map((p) => p.split('~')),
-  }));
+
+  const teams = getTeams(league.league_key);
+  const keys = teams.map((t) => t.team_key);
+  const filler = divisionAwareSchedule(teams, lastWeek);
+
+  const out = [];
+  for (let week = 1; week <= lastWeek; week++) {
+    const real = known.get(week);
+    if (real?.size) {
+      const pairs = [...real].map((p) => p.split('~'));
+      // A partially-entered week (one pairing off Yahoo, the rest unknown) is
+      // completed from the filler so the simulation still plays a full slate.
+      const placed = new Set(pairs.flat());
+      const gen = filler.find((f) => f.week === week)?.pairs ?? [];
+      for (const [a, b] of gen) {
+        if (placed.has(a) || placed.has(b)) continue;
+        pairs.push([a, b]);
+        placed.add(a); placed.add(b);
+      }
+      // `estimated` means "this week contains at least one invented pairing".
+      // A partially-entered week is common — Yahoo is read a matchup at a time
+      // — so the count matters more than the flag: our own pairing can be real
+      // inside a week that is mostly guessed, which is exactly the week 1 case.
+      out.push({ week, pairs, knownPairs: real.size, estimated: pairs.length > real.size });
+    } else {
+      out.push({ week, pairs: filler.find((f) => f.week === week)?.pairs ?? [], knownPairs: 0, estimated: true });
+    }
+  }
+  if (!keys.length) return [];
+  return out;
+}
+
+/**
+ * A round robin that keeps divisional games together where it can.
+ *
+ * Yahoo weights intra-division play more heavily than a flat rotation does, so
+ * a naive circle method over all sixteen teams gets the *shape* of the season
+ * wrong even when it gets the count right. This runs the circle method inside
+ * each division first and only crosses over once a division has exhausted its
+ * own opponents. It is still a guess — it exists to give the season simulation
+ * a plausible slate, never to tell anyone who they play.
+ */
+export function divisionAwareSchedule(teams, weeks) {
+  const byDivision = new Map();
+  for (const t of teams) {
+    const d = t.division ?? '_';
+    if (!byDivision.has(d)) byDivision.set(d, []);
+    byDivision.get(d).push(t.team_key);
+  }
+  const divisions = [...byDivision.values()];
+  if (divisions.length < 2) return roundRobinSchedule(teams.map((t) => t.team_key), weeks);
+
+  const intra = divisions.map((keys) => roundRobinSchedule(keys, weeks));
+  const cross = roundRobinSchedule(teams.map((t) => t.team_key), weeks);
+  const intraWeeks = Math.min(...divisions.map((d) => d.length - 1));
+
+  const out = [];
+  for (let w = 1; w <= weeks; w++) {
+    if (w <= intraWeeks) {
+      out.push({ week: w, pairs: intra.flatMap((sched) => sched[w - 1]?.pairs ?? []) });
+    } else {
+      out.push({ week: w, pairs: cross[(w - 1) % cross.length]?.pairs ?? [] });
+    }
+  }
+  return out;
 }
 
 /** Season simulation across every team in the league. */
@@ -457,8 +547,7 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
   const myRoster = rosterOf(league.league_key, me.team_key, week);
   const myProj = project(league, myRoster, week, { persist: true });
 
-  const m = currentMatchup(league.league_key, me.team_key, week);
-  const oppKey = m?.opp_team_key;
+  const { oppKey, source: oppSource } = opponentForWeek(league, me.team_key, week);
   const opp = oppKey ? get('SELECT * FROM teams WHERE league_key = ? AND team_key = ?', [league.league_key, oppKey]) : null;
   const oppRoster = oppKey ? rosterOf(league.league_key, oppKey, week) : [];
   const oppProj = project(league, oppRoster, week);
@@ -491,7 +580,8 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
   return {
     week,
     me: { ...me, projection: round(decision.recommended.mean, 1) },
-    opponent: opp ? { ...opp, projection: round(sim.oppMean, 1) } : null,
+    opponent: opp ? { ...opp, projection: round(sim.oppMean, 1), source: oppSource } : null,
+    opponentSource: oppSource,
     winProbability: sim.winProb,
     posture: posture(decision.pointOptimal.winProb),
     decision: {
