@@ -17,7 +17,7 @@ import { all, get, j } from '../db/index.mjs';
 import { clamp, gammaCdf, gammaQuantileMS } from '../util/stats.mjs';
 import { scoreStatLine } from './scoring.mjs';
 import { usageProfile, opportunityScore, ewma, POSITION_PRIORS, shrinkToPrior } from './features.mjs';
-import { defenseMultiplier, environmentMultiplier, weatherMultiplier, findGame } from './matchup.mjs';
+import { defenseMultiplier, environmentMultiplier, weatherMultiplier, findGame, weekHasSchedule } from './matchup.mjs';
 
 export const MODEL_VERSION = 'oracle-proj-1.4';
 
@@ -161,7 +161,14 @@ export function projectPlayer(player, ctx) {
   const st = statusFactor(player.status);
 
   const onBye = player.bye_week != null && Number(player.bye_week) === Number(week);
-  const noGame = !game && !onBye;
+  // "No game found" means one of two completely different things. If the week's
+  // schedule is loaded and this team is not in it, the player genuinely does not
+  // play and zero is right. If NO games are loaded at all, zero is a
+  // fabrication — it silently zeroes every player in the league and reports a
+  // war room full of 0.0 projections that look like a computed answer.
+  const scheduleLoaded = weekHasSchedule(season, week);
+  const noGame = !game && !onBye && scheduleLoaded;
+  const scheduleMissing = !game && !onBye && !scheduleLoaded;
 
   const components = [
     { key: 'baseline', label: 'Baseline (recency-weighted)', value: base.ppg, kind: 'base', note: base.source },
@@ -181,6 +188,13 @@ export function projectPlayer(player, ctx) {
   } else if (noGame) {
     mean = 0;
     components.push({ key: 'nogame', label: 'No scheduled game', mult: 0, note: 'no game found on the schedule for this week' });
+  } else if (scheduleMissing) {
+    // Matchup-neutral: the baseline stands, with none of the opponent, venue or
+    // weather adjustments applied, because there is no game to read them from.
+    components.push({
+      key: 'noschedule', label: 'No schedule loaded', mult: 1,
+      note: 'no games are loaded for this week — projection is matchup-neutral',
+    });
   }
 
   mean = Math.max(0, mean);

@@ -43,6 +43,17 @@ export function defenseMultiplier(defTeam, pos, season) {
 }
 
 /** Find this player's game for the week, plus whether he is home. */
+/**
+ * Whether a schedule exists for this week at all.
+ *
+ * The difference between "this team has no game" and "no games are loaded" is
+ * the difference between a bye — where zero is the right projection — and a
+ * missing import, where zero is a fabrication. Nothing could tell them apart.
+ */
+export function weekHasSchedule(season, week) {
+  return (get('SELECT COUNT(*) c FROM games WHERE season = ? AND week = ?', [season, week])?.c ?? 0) > 0;
+}
+
 export function findGame(nflTeam, season, week) {
   if (!nflTeam) return null;
   const g = get(

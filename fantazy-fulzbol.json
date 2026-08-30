@@ -52,6 +52,136 @@
     { "name": "The Ternichian",        "division": "Division 1", "waiverPriority": 16 }
   ],
 
+  "_rosters": "Rounds 1-6 of every team, transcribed from the draft-board screenshots taken on draft night. PARTIAL AND UNVERIFIED: rosters are 13 deep, so this is roughly the first half of each, and it contains NO kickers and NO defenses for anyone \u2014 every team's projection from this data is therefore an underestimate, and by roughly the same amount, which keeps the RANKING usable while the absolute numbers are low. Two known transcription problems: Brock Purdy was read onto both Guashingtonians and Count Snoop the Loop, which a draft cannot do, and he is assigned here to Count Snoop on positional evidence (Guashingtonians already show Lamar Jackson and Dak Prescott, so a third quarterback in six picks is implausible, while Count Snoop show none) \u2014 Guashingtonians' sixth pick is consequently unknown rather than guessed; and MISSION SUBMISSION had only five picks legible. Overwrite any of this from Yahoo's roster pages when convenient; these names are a starting point, not a record.",
+  "rosters": {
+      "Frank the Tank": [
+          "Ja'Marr Chase",
+          "Josh Allen",
+          "D'Andre Swift",
+          "Davante Adams",
+          "Harold Fannin Jr.",
+          "Tony Pollard"
+      ],
+      "Fly Agaric": [
+          "Saquon Barkley",
+          "Tee Higgins",
+          "Colston Loveland",
+          "Bucky Irving",
+          "Parker Washington",
+          "Matthew Stafford"
+      ],
+      "The Ternichian": [
+          "Jahmyr Gibbs",
+          "Trey McBride",
+          "Malik Nabers",
+          "Mike Evans",
+          "TreVeyon Henderson",
+          "Baker Mayfield"
+      ],
+      "VelociRaptor": [
+          "Bijan Robinson",
+          "Jaylen Waddle",
+          "Travis Etienne Jr.",
+          "Jayden Daniels",
+          "Marvin Harrison Jr.",
+          "George Kittle"
+      ],
+      "MISSION SUBMISSION": [
+          "Jonathan Taylor",
+          "Rashee Rice",
+          "Christian Watson",
+          "Joe Burrow",
+          "Chris Godwin Jr."
+      ],
+      "Alonso's": [
+          "Amon-Ra St. Brown",
+          "Chris Olave",
+          "Jeremiyah Love",
+          "Bhayshul Tuten",
+          "Drake Maye",
+          "Jaylen Warren"
+      ],
+      "Los Acereros": [
+          "Puka Nacua",
+          "Breece Hall",
+          "Zay Flowers",
+          "Jadarian Price",
+          "Justin Herbert",
+          "Dallas Goedert"
+      ],
+      "PUSHERO": [
+          "James Cook III",
+          "DeVonta Smith",
+          "David Montgomery",
+          "Tucker Kraft",
+          "Jalen Hurts",
+          "Carnell Tate"
+      ],
+      "Lux Valebergs": [
+          "Jaxon Smith-Njigba",
+          "George Pickens",
+          "Cam Skattebo",
+          "Quinshon Judkins",
+          "DK Metcalf",
+          "Patrick Mahomes II"
+      ],
+      "Datsun": [
+          "Christian McCaffrey",
+          "Drake London",
+          "Tetairoa McMillan",
+          "Jameson Williams",
+          "Sam LaPorta",
+          "Jaxson Dart"
+      ],
+      "Walker Texas Ranger": [
+          "Justin Jefferson",
+          "Kyren Williams",
+          "Emeka Egbuka",
+          "Rhamondre Stevenson",
+          "Travis Kelce",
+          "Jared Goff"
+      ],
+      "INGLOURIOUS BASTERDS": [
+          "De'Von Achane",
+          "Brock Bowers",
+          "Ladd McConkey",
+          "Rome Odunze",
+          "Bo Nix",
+          "Brian Thomas Jr."
+      ],
+      "McGiver": [
+          "Derrick Henry",
+          "A.J. Brown",
+          "DJ Moore",
+          "Caleb Williams",
+          "J.K. Dobbins",
+          "Courtland Sutton"
+      ],
+      "Ray Finkle": [
+          "CeeDee Lamb",
+          "Ashton Jeanty",
+          "Josh Jacobs",
+          "Tyler Warren",
+          "Trevor Lawrence",
+          "Makai Lemon"
+      ],
+      "Guashingtonians": [
+          "Kenneth Walker III",
+          "Nico Collins",
+          "Terry McLaurin",
+          "Lamar Jackson",
+          "Dak Prescott"
+      ],
+      "Count Snoop the Loop": [
+          "Chase Brown",
+          "Omarion Hampton",
+          "Garrett Wilson",
+          "Luther Burden III",
+          "Kyle Pitts Sr.",
+          "Brock Purdy"
+      ]
+  },
+
   "_draftOrder": "Seat order at the draft table, seat 1 first — read off Yahoo's draft results page: the first sixteen picks of round 1 name the sixteen seats in order. This is the ONLY thing connecting a pick to a manager. The pick log tells the app which SEAT made each pick, never who sat there, so without this list the opponents' rosters cannot be rebuilt and the war room, playoff odds and trade views have nothing to work with. Ours is seat 4.",
   "draftOrder": [],
 

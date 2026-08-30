@@ -458,3 +458,36 @@ test('a schedule naming a team that does not exist is reported, not silently dro
   assert.deepEqual(r.unknownTeams, ['A Team That Never Existed']);
   assert.equal(r.matchups, 0, 'the bad pairing is not written as if it were real');
 });
+
+test('a missing schedule projects matchup-neutral, not zero', async () => {
+  // The failure this replaced: findGame returns nothing both when a team is on
+  // bye AND when no games are loaded at all, and both were treated as "does not
+  // play". On a fresh install with no schedule imported that zeroed every
+  // player in the league, so the war room reported a full slate of 0.0
+  // projections and a 50.0% win probability — output shaped exactly like a
+  // computed answer, produced from an empty table.
+  const { projectPlayer } = await import('../src/engine/projections.mjs');
+  const { run } = await import('../src/db/index.mjs');
+
+  run('DELETE FROM games WHERE season = 2031');
+  const player = { player_id: 'sched1', name: 'Test Back', pos: 'RB', nfl_team: 'ZZZ', status: '', bye_week: null };
+  const ctx = { season: 2031, week: 1, scoring: {} };
+
+  const noSchedule = projectPlayer(player, ctx);
+  assert.ok(noSchedule.mean > 0, 'an unloaded schedule is unknown, not zero');
+  assert.ok(noSchedule.components.some((c) => c.key === 'noschedule'), 'and the projection says so');
+
+  // With a schedule loaded, a team that is genuinely absent from it scores zero.
+  upsertMany('games', ['season', 'week', 'home', 'away', 'source'],
+    [{ season: 2031, week: 1, home: 'AAA', away: 'BBB', source: 'real' }],
+    ['season', 'week', 'home', 'away']);
+
+  const absent = projectPlayer(player, ctx);
+  assert.equal(absent.mean, 0, 'a real schedule that omits the team means it does not play');
+  assert.ok(absent.components.some((c) => c.key === 'nogame'));
+
+  // And a team that IS on the schedule projects normally.
+  const playing = projectPlayer({ ...player, nfl_team: 'AAA' }, ctx);
+  assert.ok(playing.mean > 0);
+  assert.ok(!playing.components.some((c) => c.key === 'nogame' || c.key === 'noschedule'));
+});

@@ -697,6 +697,19 @@ const COMMANDS = {
       if (r.unknownTeams?.length) {
         out(`  ${c.red}!${c.reset} schedule names not in the team list, ignored: ${r.unknownTeams.join(', ')}`);
       }
+      if (r.rosters) {
+        const rr = r.rosters;
+        out(`  ${c.green}\u2713${c.reset} ${c.bold}${rr.players}${c.reset} roster spots across ${rr.teams} teams`);
+        if (rr.contested.length) {
+          out(`  ${c.yellow}!${c.reset} claimed by more than one team, so assigned to NEITHER:`);
+          for (const x of rr.contested) out(`      ${x.player} — ${x.teams.join(' and ')}`);
+        }
+        if (rr.unmatched.length) {
+          out(`  ${c.yellow}!${c.reset} names not found in the player pool (${rr.unmatched.length}): ${rr.unmatched.slice(0, 10).join(', ')}${rr.unmatched.length > 10 ? ' …' : ''}`);
+        }
+        const thin = Object.entries(rr.written).filter(([, n]) => n < 6).map(([t, n]) => `${t} (${n})`);
+        if (thin.length) out(`  ${c.grey}fewer than six picks recorded: ${thin.join(', ')}${c.reset}`);
+      }
       return;
     }
     if (sub === 'stats' || sub === 'proj-week') {

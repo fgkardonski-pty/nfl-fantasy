@@ -348,9 +348,16 @@ export function setupRealLeague(cfg) {
     meta.set(`draft_order:${leagueKey}`, JSON.stringify(cfg.draftOrder));
   }
 
+  // Rosters, when the operator has transcribed them. Done last so the teams
+  // they reference already exist.
+  let rosterReport = null;
+  if (cfg.rosters && Object.keys(cfg.rosters).length) {
+    rosterReport = importRostersByName(leagueKey, cfg.rosters, { week: 1 });
+  }
+
   meta.set('active_league', leagueKey);
   log.info(`real league configured: ${league.name} — ${teamRows.length} teams, ${matchupRows.length / 2} known matchups`);
-  return { league_key: leagueKey, teams: teamRows.length, matchups: matchupRows.length / 2, unknownTeams: [...unknownTeams], staleTeams: stale.map((r) => r.name) };
+  return { league_key: leagueKey, teams: teamRows.length, matchups: matchupRows.length / 2, unknownTeams: [...unknownTeams], staleTeams: stale.map((r) => r.name), rosters: rosterReport };
 }
 
 /**
@@ -652,4 +659,89 @@ export async function probeSleeperWeekly({ season, week, kind = 'stats' } = {}) 
   const matched = ids.filter((id) => get('SELECT 1 FROM players WHERE sleeper_id = ?', [String(id)])).length;
 
   return { ok: true, kind, season, week, players: ids.length, linked, matched, mapped, unmapped };
+}
+
+/**
+ * Write hand-transcribed rosters into the database.
+ *
+ * The league's rosters were read off draft-board screenshots rather than pulled
+ * from an API, which makes this the one ingestion path where the SOURCE is
+ * known to be lossy: a name can be misread, a row can be cut off, and the same
+ * player can end up transcribed onto two teams. So every failure mode is
+ * reported rather than resolved quietly.
+ *
+ * A player claimed by more than one team is assigned to NEITHER. In a draft
+ * that cannot happen, so it is proof of a transcription error, and picking a
+ * side would put a real player on a team that never had him — which then shows
+ * up as a confident projection nobody can trace back.
+ *
+ * @param {Object} rostersByTeam  { "Team Name": ["Player Name", ...] }
+ * @returns {Object} what was written and what could not be
+ */
+export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {}) {
+  const teams = all('SELECT team_key, name FROM teams WHERE league_key = ?', [leagueKey]);
+  const teamByName = new Map(teams.map((t) => [t.name, t]));
+
+  const locals = all("SELECT player_id, name, pos FROM players WHERE pos IN ('QB','RB','WR','TE','K','DEF')");
+  const byName = new Map();
+  for (const p of locals) {
+    const n = normaliseName(p.name);
+    if (!byName.has(n)) byName.set(n, []);
+    byName.get(n).push(p);
+  }
+
+  // Claims first, so a player on two teams is visible before anything is written.
+  const claims = new Map();
+  const unknownTeams = [];
+  for (const [teamName, names] of Object.entries(rostersByTeam ?? {})) {
+    if (!teamByName.has(teamName)) { unknownTeams.push(teamName); continue; }
+    for (const name of names ?? []) {
+      const n = normaliseName(name);
+      if (!claims.has(n)) claims.set(n, { name, teams: [] });
+      claims.get(n).teams.push(teamName);
+    }
+  }
+
+  const contested = [];
+  const unmatched = [];
+  const assign = new Map();      // team name -> [player rows]
+  for (const [n, claim] of claims) {
+    if (claim.teams.length > 1) { contested.push({ player: claim.name, teams: claim.teams }); continue; }
+    const candidates = byName.get(n) ?? [];
+    // Ambiguous names are refused for the same reason contested ones are: a
+    // wrong player is indistinguishable from a right one once it is stored.
+    if (candidates.length !== 1) {
+      unmatched.push(`${claim.name}${candidates.length > 1 ? ' (ambiguous)' : ''}`);
+      continue;
+    }
+    const team = claim.teams[0];
+    if (!assign.has(team)) assign.set(team, []);
+    assign.get(team).push(candidates[0]);
+  }
+
+  const rows = [];
+  const written = {};
+  for (const [teamName, players] of assign) {
+    const team = teamByName.get(teamName);
+    run('DELETE FROM rosters WHERE league_key = ? AND team_key = ? AND week = ?', [leagueKey, team.team_key, week]);
+    // Slot assignment is left to the caller's optimiser where one is available;
+    // here every player starts on the bench and the service promotes them, so a
+    // partial roster never claims a starting lineup it cannot field.
+    for (const p of players) {
+      rows.push({
+        league_key: leagueKey, team_key: team.team_key, player_id: p.player_id,
+        week, slot: 'BN', is_starter: 0, acquired: 'draft',
+      });
+    }
+    written[teamName] = players.length;
+  }
+  if (rows.length) {
+    upsertMany('rosters',
+      ['league_key', 'team_key', 'player_id', 'week', 'slot', 'is_starter', 'acquired'],
+      rows, ['league_key', 'team_key', 'player_id', 'week']);
+  }
+
+  log.info(`imported ${rows.length} roster spots across ${assign.size} teams`);
+  if (contested.length) log.warn(`players claimed by more than one team, assigned to none: ${contested.map((c) => c.player).join(', ')}`);
+  return { players: rows.length, teams: assign.size, written, contested, unmatched, unknownTeams };
 }
