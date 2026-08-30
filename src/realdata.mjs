@@ -591,10 +591,25 @@ export async function importWeeklyFromSleeper({ season, week, kind = 'stats' } =
   }
 
   if (statRows.length) {
-    upsertMany('player_stats', ['player_id', 'season', 'week', 'opponent', 'stats'],
-      statRows, ['player_id', 'season', 'week']);
+    if (kind === 'projections') {
+      // A forecast is not a result. Written into player_stats it would become a
+      // game the baseline believes was played, and every number downstream would
+      // inherit a fact nobody observed.
+      upsertMany('external_projections',
+        ['source', 'player_id', 'season', 'week', 'stats', 'fetched_at'],
+        statRows.map((r) => ({
+          source: 'sleeper', player_id: r.player_id, season: r.season, week: r.week,
+          stats: r.stats, fetched_at: Date.now(),
+        })),
+        ['source', 'player_id', 'season', 'week']);
+    } else {
+      upsertMany('player_stats', ['player_id', 'season', 'week', 'opponent', 'stats'],
+        statRows, ['player_id', 'season', 'week']);
+    }
   }
-  if (usageRows.length) {
+  // Usage is an observation either way, but a projected usage line is not, so
+  // it is only stored alongside real stats.
+  if (usageRows.length && kind !== 'projections') {
     upsertMany('player_usage', Object.keys(usageRows[0]), usageRows, ['player_id', 'season', 'week']);
   }
 
@@ -758,4 +773,47 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
   log.info(`imported ${rows.length} roster spots across ${assign.size} teams`);
   if (contested.length) log.warn(`players claimed by more than one team, assigned to none: ${contested.map((c) => c.player).join(', ')}`);
   return { players: rows.length, teams: assign.size, written, contested, unmatched, unknownTeams };
+}
+
+
+/**
+ * Import the NFL schedule.
+ *
+ * Deliberately does NOT invent betting lines. A game row with no implied totals
+ * still earns its place: it tells every projection which opponent a player
+ * faces and which teams are on bye, and it lets the defense streamer say "no
+ * lines" rather than "no schedule" — two different problems with two different
+ * fixes. Odds are layered on afterwards by the odds provider, which writes to
+ * the same rows.
+ */
+export async function importScheduleFromSleeper({ season } = {}) {
+  const games = await sleeper.nflSchedule({ season });
+  if (!games) {
+    return { ok: false, note: `No schedule came back for ${season}. This endpoint is undocumented and may have moved, or the season may not be published yet.` };
+  }
+
+  // Preserve any lines and weather already stored for these games.
+  const rows = games.map((g) => {
+    const existing = get(
+      'SELECT total, spread, implied_home, implied_away, roof, weather FROM games WHERE season=? AND week=? AND home=? AND away=?',
+      [g.season, g.week, g.home, g.away]
+    );
+    return {
+      season: g.season, week: g.week, home: g.home, away: g.away,
+      kickoff: g.kickoff,
+      total: existing?.total ?? null,
+      spread: existing?.spread ?? null,
+      implied_home: existing?.implied_home ?? null,
+      implied_away: existing?.implied_away ?? null,
+      roof: existing?.roof ?? null,
+      weather: existing?.weather ?? null,
+      source: 'real',
+    };
+  });
+  upsertMany('games', Object.keys(rows[0]), rows, ['season', 'week', 'home', 'away']);
+
+  const weeks = new Set(rows.map((r) => r.week));
+  const withLines = rows.filter((r) => r.implied_home != null).length;
+  log.info(`imported ${rows.length} games across ${weeks.size} weeks (${withLines} carry betting lines)`);
+  return { ok: true, games: rows.length, weeks: weeks.size, withLines, season };
 }

@@ -183,6 +183,25 @@ CREATE TABLE IF NOT EXISTS projections (
 );
 CREATE INDEX IF NOT EXISTS idx_proj_week ON projections(league_key, season, week);
 
+-- Projections published by an OUTSIDE source, kept separate from both our own
+-- model output (projections) and from played games (player_stats).
+--
+-- The distinction is not bookkeeping. A projection written into player_stats is
+-- a forecast wearing the clothes of a result: the baseline would count it as a
+-- game that happened, and every downstream number would inherit a fact that was
+-- never observed. Source is part of the key so two providers can disagree
+-- without overwriting each other.
+CREATE TABLE IF NOT EXISTS external_projections (
+  source     TEXT NOT NULL,
+  player_id  TEXT NOT NULL,
+  season     INTEGER NOT NULL,
+  week       INTEGER NOT NULL,
+  stats      TEXT NOT NULL DEFAULT '{}',
+  fetched_at INTEGER,
+  PRIMARY KEY (source, player_id, season, week)
+);
+CREATE INDEX IF NOT EXISTS idx_extproj_week ON external_projections(season, week);
+
 -- Positional strength of each NFL defense, expressed as fantasy points allowed
 -- above/below the league average to that position.
 CREATE TABLE IF NOT EXISTS team_defense (

@@ -18,7 +18,7 @@ import { clamp, gammaCdf, gammaQuantileMS } from '../util/stats.mjs';
 import { scoreStatLine } from './scoring.mjs';
 import { usageProfile, opportunityScore, ewma, POSITION_PRIORS, shrinkToPrior } from './features.mjs';
 import { defenseMultiplier, environmentMultiplier, weatherMultiplier, findGame, weekHasSchedule } from './matchup.mjs';
-import { expectedPointsAtRank } from './statline.mjs';
+import { expectedPointsAtRank, expectedScore } from './statline.mjs';
 
 export const MODEL_VERSION = 'oracle-proj-1.4';
 
@@ -66,6 +66,17 @@ export function baselinePpg(playerId, pos, season, throughWeek, scoring) {
     // calibrated against real projections. Falling back to it costs nothing and
     // is right for the entire preseason, which is exactly when the flat prior
     // was doing the most damage.
+    // An outside projection for this exact week beats any archetype: it knows
+    // the player, the offense and the opponent, none of which a positional
+    // curve can. Preferred whenever one has been imported.
+    const ext = externalProjection(playerId, season, throughWeek + 1, scoring);
+    if (ext != null) {
+      return {
+        ppg: ext.points, games: 0, recent: null, seasonAvg: null, external: ext.source,
+        source: `${ext.source} projection for week ${throughWeek + 1}`,
+      };
+    }
+
     const rank = positionalRankOf(playerId, pos, season);
     if (rank != null) {
       return {
@@ -320,4 +331,32 @@ function positionalRankOf(playerId, pos, season) {
     rankCache.set(key, map);
   }
   return map.get(playerId) ?? null;
+}
+
+
+/**
+ * A projection published by an outside source for one player in one week.
+ *
+ * Scored through THIS league's rules rather than taken as a points total,
+ * because a provider's own number is computed under its own scoring — which is
+ * exactly the mistake this whole archetype layer exists to avoid. What is
+ * borrowed is the stat line; the valuation stays ours.
+ *
+ * Scored with expectedScore, not scoreStatLine: a projected line is an AVERAGE,
+ * so a threshold bonus is worth the probability of clearing it rather than all
+ * or nothing, and a projected points-allowed figure has to be converted through
+ * a distribution into this league's tiers. scoreStatLine has no rate to
+ * multiply def_pts_allowed by, so using it here would silently drop the whole
+ * points-allowed category from every projected defense — the same defect,
+ * in its third disguise.
+ */
+function externalProjection(playerId, season, week, scoring) {
+  const row = get(
+    'SELECT source, stats FROM external_projections WHERE player_id = ? AND season = ? AND week = ? ORDER BY fetched_at DESC LIMIT 1',
+    [playerId, season, week]
+  );
+  if (!row) return null;
+  const stats = j(row.stats, {});
+  if (!Object.keys(stats).length) return null;
+  return { source: row.source, points: expectedScore(stats, scoring), stats };
 }

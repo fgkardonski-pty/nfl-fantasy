@@ -18,7 +18,7 @@ import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextContestedPick } from '../src/engine/draft.mjs';
 import { uncoveredScoringRules } from '../src/engine/statline.mjs';
-import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly } from '../src/realdata.mjs';
+import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly, importScheduleFromSleeper } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -826,6 +826,20 @@ const COMMANDS = {
       }
       return;
     }
+    if (sub === 'schedule') {
+      const season = Number(opts.season ?? config.season ?? new Date().getFullYear());
+      const r = await importScheduleFromSleeper({ season });
+      if (!r.ok) { out(`${c.yellow}!${c.reset} ${r.note}`); return; }
+      out(`${c.green}\u2713${c.reset} ${c.bold}${r.games}${c.reset} games across ${r.weeks} weeks for ${r.season}`);
+      if (!r.withLines) {
+        out(`  ${c.grey}No betting lines yet. Projections are now matchup-aware, but the defense${c.reset}`);
+        out(`  ${c.grey}streamer needs implied team totals — those come from an odds feed:${c.reset}`);
+        out(`    ${c.cyan}node bin/oracle.mjs research odds${c.reset}`);
+      } else {
+        out(`  ${c.grey}${r.withLines} games already carry betting lines.${c.reset}`);
+      }
+      return;
+    }
     if (sub === 'probe-week') {
       const season = Number(opts.season ?? config.season ?? new Date().getFullYear());
       const week = Number(opts.week ?? 1);
@@ -863,7 +877,7 @@ const COMMANDS = {
       }
       return;
     }
-    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp-csv --file <f> | fp | fp-proj | fp-probe | fp-page | adp --file <f> | stats --week N | proj-week --week N | probe-week --week N${c.reset}`);
+    out(`${c.red}Unknown real action "${sub}". Try: seed | league --file <f> | fp-csv --file <f> | fp | fp-proj | fp-probe | fp-page | adp --file <f> | schedule | stats --week N | proj-week --week N | probe-week --week N${c.reset}`);
     process.exit(1);
   },
 
@@ -912,6 +926,7 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real stats${c.reset} --week N     import a played week's real stat lines from Sleeper
   ${c.cyan}real proj-week${c.reset} --week N Sleeper's projections for a week not yet played
   ${c.cyan}real probe-week${c.reset} --week N  show what Sleeper returns and which keys we map
+  ${c.cyan}real schedule${c.reset}           import the NFL schedule (no odds; those come from research odds)
   ${c.cyan}research${c.reset} [job]          run research jobs once (no job = all)
   ${c.cyan}news add${c.reset} "<headline>"   record news, then score it with the Claude API
   ${c.cyan}news list${c.reset}               recent news with its scored projection impact

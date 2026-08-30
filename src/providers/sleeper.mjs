@@ -312,3 +312,38 @@ export async function weeklyBlobs({ season, week, kind = 'stats', seasonType = '
   if (!j || typeof j !== 'object') return null;
   return j;
 }
+
+/**
+ * The NFL schedule for a season.
+ *
+ * NOT part of Sleeper's documented v1 surface — it sits outside /v1 and its
+ * shape is not contractual, so every field is read defensively and the caller
+ * is told plainly when nothing usable came back. Worth the uncertainty because
+ * the alternative is no schedule at all: without one every player projects
+ * matchup-neutral, the defense streamer cannot rank, and there is no way to
+ * separate a modelling error from a hard week.
+ *
+ * It carries no betting lines. Those still have to come from an odds feed.
+ */
+export async function nflSchedule({ season, seasonType = 'regular' } = {}) {
+  const j = await getJson(`https://api.sleeper.app/schedule/nfl/${seasonType}/${season}`, {
+    source: 'sleeper', cache: true, maxAgeMs: 24 * 36e5, timeoutMs: 45000,
+  });
+  if (!Array.isArray(j)) return null;
+
+  const games = [];
+  for (const g of j) {
+    const week = Number(g?.week);
+    const home = g?.home ?? g?.home_team ?? null;
+    const away = g?.away ?? g?.away_team ?? null;
+    if (!Number.isFinite(week) || !home || !away) continue;
+    games.push({
+      season, week,
+      home: String(home).toUpperCase(),
+      away: String(away).toUpperCase(),
+      kickoff: g?.date ? Date.parse(g.date) : null,
+      status: g?.status ?? null,
+    });
+  }
+  return games.length ? games : null;
+}

@@ -14,7 +14,7 @@ import { optimalLineup } from './engine/optimizer.mjs';
 import { simulateMatchup, simulateSeason, teamWeekDistribution, roundRobinSchedule } from './engine/simulate.mjs';
 import { optimizeForWinProbability, posture } from './engine/leverage.mjs';
 import { computeVor, replacementLevels, tierize, tierSummary } from './engine/vor.mjs';
-import { expectedPointsAtRank, archetypeStatLine } from './engine/statline.mjs';
+import { expectedPointsAtRank, archetypeStatLine, expectedScore } from './engine/statline.mjs';
 import { rankWaiverTargets, breakoutScan, worstDroppable } from './engine/waivers.mjs';
 import { scanLeague, evaluateOffer } from './engine/trades.mjs';
 import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachTargets, positionalNeed } from './engine/opponent.mjs';
@@ -1048,10 +1048,21 @@ export function streamDefenses(league, { week = league.current_week, limit = 10 
       )[0]?.nfl_team ?? null
     : null;
 
+  // A published projection for this exact week, scored through this league's
+  // rules. Preferred over anything derived from an implied team total.
+  const extRows = all(
+    'SELECT player_id, stats FROM external_projections WHERE season = ? AND week = ?',
+    [season, week]
+  );
+  const extByPlayer = new Map(extRows.map((r) => [r.player_id, j(r.stats, {})]));
+
   const defenses = ranked.map((d, i) => ({
     player_id: d.player_id,
     name: d.name,
     nfl_team: d.nfl_team,
+    externalMean: extByPlayer.has(d.player_id)
+      ? expectedScore(extByPlayer.get(d.player_id), league.scoring)
+      : null,
     // Real per-game production once weeks have been played; the archetype at
     // this defense's draft rank until then.
     unit: defenseUnitLine(d.player_id, season, week) ?? archetypeStatLine('DEF', i + 1),

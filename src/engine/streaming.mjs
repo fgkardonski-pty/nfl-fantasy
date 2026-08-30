@@ -97,7 +97,14 @@ export function rankStreamers({
   defenses = [], games = [], scoring = {},
   myDefenseTeam = null, waiverPriority = null, leagueSize = 12, limit = 10,
 } = {}) {
-  if (!games.length) {
+  // A published per-defense projection beats anything derived here: it already
+  // knows the opponent, the injuries and the depth chart, none of which an
+  // implied team total carries. When enough defenses have one, rank on those
+  // and treat the implied-total model as the fallback it is.
+  const withExternal = defenses.filter((d) => Number.isFinite(d.externalMean));
+  const useExternal = withExternal.length >= Math.max(8, defenses.length * 0.5);
+
+  if (!games.length && !useExternal) {
     return { ok: false, reason: 'no-schedule', note: 'No games are loaded for this week, so there is no matchup to rank on.' };
   }
   // Only a slate explicitly tagged 'real' may be ranked on. An untagged row is
@@ -108,7 +115,7 @@ export function rankStreamers({
   // defenses against without a word. Re-importing odds is a cheap fix; a
   // confidently wrong Sunday lineup is not.
   const usable = games.filter((g) => g.source === 'real');
-  if (!usable.length) {
+  if (!usable.length && !useExternal) {
     const allDemo = games.every((g) => g.source === 'demo');
     return {
       ok: false,
@@ -119,33 +126,44 @@ export function rankStreamers({
     };
   }
   const priced = usable.filter((g) => g.implied_home != null && g.implied_away != null);
-  if (!priced.length) {
+  if (!priced.length && !useExternal) {
     return {
       ok: false, reason: 'no-lines',
       note: 'The schedule is loaded but carries no betting lines. Implied opponent total is the whole signal here; without it this ranking would be a list of defenses in arbitrary order.',
     };
   }
 
-  // NFL team -> the implied total of the offense it faces this week.
+  // NFL team -> who it faces this week, and that offense's implied total when
+  // the slate is priced. The opponent label is worth having even unpriced.
   const facing = new Map();
-  for (const g of priced) {
+  for (const g of usable) {
     facing.set(g.home, { opponent: g.away, impliedOpponentTotal: g.implied_away, home: true });
     facing.set(g.away, { opponent: g.home, impliedOpponentTotal: g.implied_home, home: false });
   }
 
   const rows = [];
   for (const d of defenses) {
-    const m = facing.get(d.nfl_team);
-    if (!m) continue;                    // on bye, or not in the priced slate
-    const ev = expectedDefenseWeek({ impliedOpponentTotal: m.impliedOpponentTotal, scoring, unit: d.unit });
+    const m = facing.get(d.nfl_team) ?? null;
+    const hasExternal = Number.isFinite(d.externalMean);
+    // Without a published projection AND without a priced matchup there is
+    // nothing to rank this defense on, so it is left out rather than shown at a
+    // number that came from nowhere.
+    if (!hasExternal && (!m || m.impliedOpponentTotal == null)) continue;
+
+    const ev = m?.impliedOpponentTotal != null
+      ? expectedDefenseWeek({ impliedOpponentTotal: m.impliedOpponentTotal, scoring, unit: d.unit })
+      : { mean: 0, pointsAllowedValue: 0, unitValue: 0, matchupSwing: 0 };
+
     rows.push({
       player_id: d.player_id,
       name: d.name,
       nfl_team: d.nfl_team,
-      opponent: m.opponent,
-      home: m.home,
-      impliedOpponentTotal: m.impliedOpponentTotal,
+      opponent: m?.opponent ?? null,
+      home: m?.home ?? null,
+      impliedOpponentTotal: m?.impliedOpponentTotal ?? null,
       ...ev,
+      basis: hasExternal ? 'projection' : 'implied-total',
+      mean: hasExternal ? d.externalMean : ev.mean,
       rostered: !!d.rostered,
       pctOwned: d.pctOwned ?? null,
       isMine: myDefenseTeam != null && d.nfl_team === myDefenseTeam,
@@ -176,6 +194,9 @@ export function rankStreamers({
   return {
     ok: true,
     week: games[0]?.week ?? null,
+    // Which signal the ordering actually came from, so a reader can tell a
+    // published projection from a number this file derived.
+    basis: useExternal ? 'projection' : 'implied-total',
     mine,
     best: available.slice(0, limit),
     recommended: realistic.find((r) => r.worthClaiming) ?? null,
