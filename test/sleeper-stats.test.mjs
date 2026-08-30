@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 
 const { mapSleeperStats, mapSleeperUsage, SLEEPER_STAT_MAP } = await import('../src/providers/sleeper.mjs');
 const { scoreStatLine } = await import('../src/engine/scoring.mjs');
+const { expectedScore } = await import('../src/engine/statline.mjs');
 const LEAGUE = JSON.parse(await import('node:fs').then((fs) => fs.promises.readFile('fantazy-fulzbol.json', 'utf8'))).scoring;
 
 test('a receiver line maps onto the categories this league actually pays for', () => {
@@ -65,6 +66,60 @@ test('return yards go to the defence and nowhere else', () => {
   assert.equal(scoreStatLine(def, LEAGUE), 7.5);
 });
 
+test('a real defensive week scores its points-allowed tier, not zero', () => {
+  // The bug this pins: Sleeper publishes BOTH a raw pts_allow total and a flag
+  // for the exact bucket. Only the raw total was mapped, and there is no
+  // def_pts_allowed rate for the scoring loop to multiply by — so a shutout
+  // scored zero for points allowed instead of sixteen. It went unnoticed
+  // because the raw total was present and looked like the category was covered.
+  const shutout = mapSleeperStats({ pts_allow: 0, pts_allow_0: 1, sack: 3 }, 'DEF');
+  assert.equal(shutout.def_pa_0, 1);
+  assert.equal(shutout.def_pts_allowed, 0);
+  assert.equal(scoreStatLine(shutout, LEAGUE), 16 + 6, 'shutout bonus plus three sacks');
+
+  const blowout = mapSleeperStats({ pts_allow: 38, pts_allow_35p: 1 }, 'DEF');
+  assert.equal(scoreStatLine(blowout, LEAGUE), -6);
+
+  for (const [key, target] of [['pts_allow_1_6', 'def_pa_1_6'], ['pts_allow_7_13', 'def_pa_7_13'],
+    ['pts_allow_14_20', 'def_pa_14_20'], ['pts_allow_21_27', 'def_pa_21_27'],
+    ['pts_allow_28_34', 'def_pa_28_34']]) {
+    assert.equal(mapSleeperStats({ [key]: 1 }, 'DEF')[target], 1, `${key} maps to ${target}`);
+  }
+});
+
+test('the raw points-allowed total is not paid a second time on top of the tier', () => {
+  // A real line carries both. The tier is exact and the raw total is what the
+  // projection path converts through a distribution; scoring both would pay for
+  // the same points allowed twice.
+  const real = mapSleeperStats({ pts_allow: 10, pts_allow_7_13: 1 }, 'DEF');
+  assert.equal(expectedScore(real, LEAGUE), 6, 'the exact tier wins outright');
+
+  // With no tier flag — the archetype case — the raw average is still converted.
+  const archetypeLike = { def_pts_allowed: 10 };
+  assert.ok(expectedScore(archetypeLike, LEAGUE) > 0, 'a projection still prices points allowed');
+});
+
+test('a defence reads its return yards from the TEAM keys, not a player’s', () => {
+  // def_kr_yd / def_pr_yd are the unit's returns; kr_yd / pr_yd are one
+  // player's and simply do not appear on a DST row. Reading the player keys for
+  // a defence left def_ret_yd unset on every defence in the league, so both the
+  // per-yard rate and the +1 at thirty yards scored nothing.
+  const d = mapSleeperStats({ def_kr_yd: 48, def_pr_yd: 17, sack: 2 }, 'DEF');
+  assert.equal(d.def_ret_yd, 65);
+  // 65 * 0.1 = 6.5, +1 for crossing 30, +4 for two sacks.
+  assert.equal(scoreStatLine(d, LEAGUE), 11.5);
+
+  // And a defence that only has the player-shaped keys still works, rather than
+  // silently scoring nothing.
+  assert.equal(mapSleeperStats({ kr_yd: 30 }, 'DEF').def_ret_yd, 30);
+});
+
+test('a special-teams fumble recovery counts as a defensive one', () => {
+  const d = mapSleeperStats({ fum_rec: 1, def_st_fum_rec: 1 }, 'DEF');
+  assert.equal(d.def_fum_rec, 2, 'Yahoo does not split them, so they accumulate');
+  assert.equal(scoreStatLine(d, LEAGUE), 4);
+});
+
 test('a defence line carries points allowed through for tier scoring', () => {
   const s = mapSleeperStats({ sack: 4, int: 2, fum_rec: 1, tkl_loss: 7, pts_allow: 10, safe: 1 }, 'DEF');
   assert.equal(s.def_sack, 4);
@@ -74,10 +129,10 @@ test('a defence line carries points allowed through for tier scoring', () => {
   // Tackles for loss are worth a point each here and were entirely absent from
   // the valuation model until this league's scoring was audited.
   assert.equal(s.def_tfl, 7);
-  // Points allowed is a raw total, not a bucket. It is carried under its own
-  // key so the tiering happens where the scoring rules live.
+  // The raw total is carried for the projection path. No bucket flag was in
+  // this blob, so none is set — the tier only appears when Sleeper sends it.
   assert.equal(s.def_pts_allowed, 10);
-  assert.equal(s.def_pa_7_13, undefined, 'the bucket is not pre-applied by the provider layer');
+  assert.equal(s.def_pa_7_13, undefined, 'a tier is never inferred from the raw total');
 });
 
 test('zero and missing stats are dropped rather than stored as zeroes', () => {

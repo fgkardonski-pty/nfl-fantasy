@@ -279,7 +279,13 @@ export function expectedScore(statLine, scoring) {
   // converting rather than multiplying. The loop above cannot do it: there is
   // no `def_pts_allowed` rate to multiply by, which is exactly why the whole
   // category used to vanish.
-  if (statLine.def_pts_allowed != null) {
+  // Guarded against the tier flags: a REAL stat line carries both the raw total
+  // and the exact bucket it landed in. The loop above already scored the bucket,
+  // so converting the raw total as well would pay for the same points allowed
+  // twice. Only convert when no bucket is present, which is the archetype case
+  // this branch exists for.
+  const hasTier = PA_TIERS.some((t) => statLine[t.key] != null);
+  if (statLine.def_pts_allowed != null && !hasTier) {
     total += expectedPointsAllowedValue(Number(statLine.def_pts_allowed), scoring);
   }
   return total;

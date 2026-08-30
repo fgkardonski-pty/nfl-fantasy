@@ -630,8 +630,11 @@ export async function probeSleeperWeekly({ season, week, kind = 'stats' } = {}) 
     }
   }
   const mapped = [], unmapped = [];
-  const derivedKeys = new Set(['kr_yd', 'pr_yd', 'kr_td', 'pr_td', 'pts_allow', 'yds_allow',
-    'off_snp', 'tm_off_snp', 'rec_tgt', 'tm_pass_att', 'tm_rush_att', 'rush_rz_att']);
+  const derivedKeys = new Set([
+    'kr_yd', 'pr_yd', 'kr_td', 'pr_td', 'def_kr_yd', 'def_pr_yd',
+    'pts_allow', 'yds_allow',
+    'off_snp', 'tm_off_snp', 'rec_tgt', 'tm_pass_att', 'tm_rush_att', 'rush_rz_att',
+  ]);
   for (const [k, n] of [...seen].sort((a, b) => b[1] - a[1])) {
     if (k in sleeper.SLEEPER_STAT_MAP || derivedKeys.has(k)) mapped.push([k, n]);
     else unmapped.push([k, n]);

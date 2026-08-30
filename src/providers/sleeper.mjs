@@ -188,6 +188,9 @@ export const SLEEPER_STAT_MAP = {
   sack: 'def_sack',
   int: 'def_int',
   fum_rec: 'def_fum_rec',
+  // A fumble recovered on special teams counts the same as one on defence in
+  // this league — Yahoo does not split them.
+  def_st_fum_rec: 'def_fum_rec',
   def_td: 'def_td',
   safe: 'def_safety',
   blk_kick: 'def_block',
@@ -198,6 +201,21 @@ export const SLEEPER_STAT_MAP = {
   def_forced_punts: null,          // known key, this league does not score it
   blk_kick_ret_yd: 'def_ret_yd',
   def_st_ff: null,
+
+  // Points allowed, as Sleeper's own bucket flags. These are the exact tier a
+  // defence landed in for a game that has been played, and they map straight
+  // onto this league's scoring. The raw `pts_allow` total is carried too, but
+  // only the projection path can use that — it has to be converted through a
+  // distribution, and there is no `def_pts_allowed` rate for the scoring loop
+  // to multiply by. Without these flags a real defensive week scored ZERO for
+  // points allowed: sixteen points for a shutout, silently dropped.
+  pts_allow_0: 'def_pa_0',
+  pts_allow_1_6: 'def_pa_1_6',
+  pts_allow_7_13: 'def_pa_7_13',
+  pts_allow_14_20: 'def_pa_14_20',
+  pts_allow_21_27: 'def_pa_21_27',
+  pts_allow_28_34: 'def_pa_28_34',
+  pts_allow_35p: 'def_pa_35p',
 };
 
 /**
@@ -210,18 +228,33 @@ export const SLEEPER_STAT_MAP = {
  */
 function derivedStats(raw, pos) {
   const out = {};
-  const kr = Number(raw.kr_yd ?? 0), pr = Number(raw.pr_yd ?? 0);
-  if (kr || pr) {
-    // Skill players score nothing for return yards in this league (RB/WR/TE 0);
-    // only the DEF unit does. Writing the yards onto a wide receiver would be
-    // harmless today and wrong the moment someone edits the scoring config.
-    if (pos === 'DEF') out.def_ret_yd = kr + pr;
-    else out.ret_yd = kr + pr;
+
+  // Return yards live under DIFFERENT keys for a team unit than for a player.
+  // `kr_yd`/`pr_yd` are one player's returns; `def_kr_yd`/`def_pr_yd` are the
+  // team's, and only the team keys appear on a DST row. Reading the player keys
+  // for a defence — which the first cut did — left def_ret_yd unset on every
+  // defence in the league, so the per-yard rate and the +1 at thirty yards both
+  // scored nothing.
+  if (pos === 'DEF') {
+    const kr = Number(raw.def_kr_yd ?? raw.kr_yd ?? 0);
+    const pr = Number(raw.def_pr_yd ?? raw.pr_yd ?? 0);
+    if (kr || pr) out.def_ret_yd = kr + pr;
+    const krTd = Number(raw.kr_td ?? 0), prTd = Number(raw.pr_td ?? 0);
+    if (krTd || prTd) out.def_ret_td = krTd + prTd;
+    // Carried for the projection path only. Nothing multiplies it in the
+    // scoring loop, so it cannot double-count against the bucket flags above.
+    if (raw.pts_allow != null) out.def_pts_allowed = Number(raw.pts_allow);
+    if (raw.yds_allow != null) out.def_yds_allowed = Number(raw.yds_allow);
+    return out;
   }
+
+  // Skill players score nothing for return yards in this league (RB/WR/TE 0,
+  // and quarterbacks do not return kicks). Kept under ret_yd so the value is
+  // not lost, and priced at whatever the scoring config says — currently zero.
+  const kr = Number(raw.kr_yd ?? 0), pr = Number(raw.pr_yd ?? 0);
+  if (kr || pr) out.ret_yd = kr + pr;
   const krTd = Number(raw.kr_td ?? 0), prTd = Number(raw.pr_td ?? 0);
-  if (krTd || prTd) out[pos === 'DEF' ? 'def_ret_td' : 'ret_td'] = krTd + prTd;
-  if (raw.pts_allow != null) out.def_pts_allowed = Number(raw.pts_allow);
-  if (raw.yds_allow != null) out.def_yds_allowed = Number(raw.yds_allow);
+  if (krTd || prTd) out.ret_td = krTd + prTd;
   return out;
 }
 
