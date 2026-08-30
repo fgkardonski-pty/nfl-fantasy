@@ -341,3 +341,12 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
   .lineup-row { grid-template-columns: 48px 1fr 60px; }
   .lineup-row > :nth-child(n+4) { display: none; }
 }
+
+/* League picker — only rendered when more than one league is loaded. */
+.league-picker { margin-bottom: 12px; }
+.league-select {
+  width: 100%; margin-top: 4px; padding: 6px 8px;
+  background: var(--bg-2); color: var(--text); font: inherit; font-size: 12px;
+  border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.league-select:hover { border-color: var(--accent); }

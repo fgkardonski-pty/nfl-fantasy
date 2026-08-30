@@ -347,3 +347,105 @@ export async function nflSchedule({ season, seasonType = 'regular' } = {}) {
   }
   return games.length ? games : null;
 }
+
+// ---------------------------------------------------------------------------
+// Sleeper leagues
+// ---------------------------------------------------------------------------
+
+/**
+ * Sleeper's roster-position codes mapped to this platform's slot names.
+ *
+ * Sleeper writes flex slots as the positions they accept; this platform names
+ * them the way Yahoo does. The mapping matters because the optimizer decides
+ * eligibility from the slot name, so an unmapped flex would silently become a
+ * slot nothing can fill.
+ */
+const SLEEPER_SLOTS = {
+  QB: 'QB', RB: 'RB', WR: 'WR', TE: 'TE', K: 'K',
+  DEF: 'DEF', DST: 'DEF',
+  FLEX: 'W/R/T', WRRB_FLEX: 'W/R', REC_FLEX: 'W/T', WRRB_WRT_FLEX: 'W/R/T',
+  SUPER_FLEX: 'Q/W/R/T',
+  BN: 'BN', IR: 'IR', TAXI: 'IR',
+};
+
+/** Resolve a Sleeper username to its user id, so a roster can be flagged as ours. */
+export async function user(username) {
+  const j = await getJson(`${BASE}/user/${encodeURIComponent(username)}`, { source: 'sleeper', cache: true, maxAgeMs: 24 * 36e5 });
+  if (!j?.user_id) return null;
+  return { user_id: String(j.user_id), display_name: j.display_name ?? null };
+}
+
+export async function league(leagueId) {
+  const j = await getJson(`${BASE}/league/${leagueId}`, { source: 'sleeper', cache: true, maxAgeMs: 36e5 });
+  if (!j?.league_id) return null;
+
+  const counts = new Map();
+  for (const code of j.roster_positions ?? []) {
+    const slot = SLEEPER_SLOTS[code] ?? code;
+    counts.set(slot, (counts.get(slot) ?? 0) + 1);
+  }
+  return {
+    league_id: String(j.league_id),
+    name: j.name ?? 'Sleeper League',
+    season: Number(j.season),
+    numTeams: Number(j.total_rosters ?? 0),
+    status: j.status,
+    scoringSettings: j.scoring_settings ?? {},
+    rosterSlots: [...counts].map(([slot, count]) => ({ slot, count })),
+    playoffStartWeek: Number(j.settings?.playoff_week_start ?? 15),
+    numPlayoffTeams: Number(j.settings?.playoff_teams ?? 6),
+    waiverType: j.settings?.waiver_type === 2 ? 'FAAB' : 'priority',
+    faabBudget: Number(j.settings?.waiver_budget ?? 0),
+    // Sleeper reports unmapped codes verbatim so a new flex type is visible
+    // rather than silently dropped.
+    unmappedSlots: (j.roster_positions ?? []).filter((c) => !SLEEPER_SLOTS[c]),
+  };
+}
+
+/** Managers, so a roster can be attributed to a person rather than a number. */
+export async function leagueUsers(leagueId) {
+  const j = await getJson(`${BASE}/league/${leagueId}/users`, { source: 'sleeper', cache: true, maxAgeMs: 36e5 });
+  return Array.isArray(j) ? j.map((u) => ({
+    user_id: String(u.user_id),
+    display_name: u.display_name ?? null,
+    team_name: u.metadata?.team_name || u.display_name || null,
+  })) : [];
+}
+
+/** Rosters, as lists of Sleeper player ids. */
+export async function leagueRosters(leagueId) {
+  const j = await getJson(`${BASE}/league/${leagueId}/rosters`, { source: 'sleeper', cache: true, maxAgeMs: 6e5 });
+  return Array.isArray(j) ? j.map((r) => ({
+    roster_id: Number(r.roster_id),
+    owner_id: r.owner_id ? String(r.owner_id) : null,
+    players: (r.players ?? []).map(String),
+    starters: (r.starters ?? []).map(String),
+    wins: Number(r.settings?.wins ?? 0),
+    losses: Number(r.settings?.losses ?? 0),
+    ties: Number(r.settings?.ties ?? 0),
+    pointsFor: Number(r.settings?.fpts ?? 0) + Number(r.settings?.fpts_decimal ?? 0) / 100,
+    pointsAgainst: Number(r.settings?.fpts_against ?? 0) + Number(r.settings?.fpts_against_decimal ?? 0) / 100,
+    waiverPosition: r.settings?.waiver_position ?? null,
+    faabUsed: r.settings?.waiver_budget_used ?? null,
+  })) : [];
+}
+
+/** One week's matchups. Sleeper pairs rosters by a shared matchup_id. */
+export async function leagueMatchups(leagueId, week) {
+  const j = await getJson(`${BASE}/league/${leagueId}/matchups/${week}`, { source: 'sleeper', cache: true, maxAgeMs: 6e5 });
+  if (!Array.isArray(j)) return [];
+  const byMatchup = new Map();
+  for (const m of j) {
+    const id = m?.matchup_id;
+    if (id == null) continue;
+    if (!byMatchup.has(id)) byMatchup.set(id, []);
+    byMatchup.get(id).push({ roster_id: Number(m.roster_id), points: Number(m.points ?? 0) });
+  }
+  const pairs = [];
+  for (const side of byMatchup.values()) {
+    if (side.length === 2) pairs.push(side);
+  }
+  return pairs;
+}
+
+export { SLEEPER_SLOTS };

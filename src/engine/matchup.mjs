@@ -51,13 +51,17 @@ export function defenseMultiplier(defTeam, pos, season) {
  * missing import, where zero is a fabrication. Nothing could tell them apart.
  */
 export function weekHasSchedule(season, week) {
-  return (get('SELECT COUNT(*) c FROM games WHERE season = ? AND week = ?', [season, week])?.c ?? 0) > 0;
+  return (get("SELECT COUNT(*) c FROM games WHERE season = ? AND week = ? AND source = 'real'", [season, week])?.c ?? 0) > 0;
 }
 
 export function findGame(nflTeam, season, week) {
   if (!nflTeam) return null;
+  // Only a slate tagged 'real' is read. Demo fixtures use real team
+  // abbreviations and plausible spreads, so an untagged or invented schedule is
+  // indistinguishable from a true one — and worse than none, because a player
+  // whose team is absent from it is projected at zero as though he were on bye.
   const g = get(
-    `SELECT * FROM games WHERE season = ? AND week = ? AND (home = ? OR away = ?)`,
+    `SELECT * FROM games WHERE season = ? AND week = ? AND source = 'real' AND (home = ? OR away = ?)`,
     [season, week, nflTeam, nflTeam]
   );
   if (!g) return null;

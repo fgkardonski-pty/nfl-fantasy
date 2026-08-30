@@ -854,3 +854,168 @@ export async function importScheduleFromSleeper({ season } = {}) {
   log.info(`imported ${rows.length} games across ${weeks.size} weeks (${withLines} carry betting lines)`);
   return { ok: true, games: rows.length, weeks: weeks.size, withLines, season };
 }
+
+// ---------------------------------------------------------------------------
+// Sleeper leagues
+// ---------------------------------------------------------------------------
+
+/**
+ * Translate Sleeper's scoring settings into this platform's canonical keys.
+ *
+ * Reuses the same stat-key map the weekly importer uses, so a league's rules
+ * and the stat lines they are applied to can never drift apart — a rule under a
+ * key nothing produces would score zero forever, which is the defect
+ * uncoveredScoringRules exists to catch.
+ */
+export function scoringFromSleeper(settings = {}) {
+  const out = {};
+  const unmapped = [];
+  for (const [key, value] of Object.entries(settings)) {
+    const v = Number(value);
+    if (!Number.isFinite(v) || v === 0) continue;
+    const canonical = sleeper.SLEEPER_STAT_MAP[key];
+    if (canonical) { out[canonical] = (out[canonical] ?? 0) + v; continue; }
+    // Points allowed arrives as per-bucket rules under Sleeper's own names.
+    const pa = /^pts_allow_(\d+_\d+|\d+p?|0)$/.exec(key);
+    if (pa) { out[`def_pa_${pa[1]}`] = v; continue; }
+    unmapped.push(key);
+  }
+  return { scoring: out, unmapped };
+}
+
+/**
+ * Import a Sleeper league: settings, managers, rosters and this week's matchup.
+ *
+ * Kept entirely separate from the Yahoo league by league_key. Nothing is
+ * shared between them but the player universe, which is correct — the same
+ * athlete, valued under two different sets of rules, is exactly the situation
+ * this platform's scoring layer was built for.
+ */
+export async function importSleeperLeague(leagueId, { week = null, username = null } = {}) {
+  const meta_ = await sleeper.league(leagueId);
+  if (!meta_) return { ok: false, note: `Sleeper returned nothing for league ${leagueId}. Check the id.` };
+
+  const [users, rosters] = await Promise.all([
+    sleeper.leagueUsers(leagueId),
+    sleeper.leagueRosters(leagueId),
+  ]);
+  if (!rosters.length) return { ok: false, note: `League ${leagueId} has no rosters yet — it may not have drafted.` };
+
+  const leagueKey = `sleeper.l.${meta_.league_id}`;
+  const { scoring, unmapped } = scoringFromSleeper(meta_.scoringSettings);
+  const state = await sleeper.nflState().catch(() => null);
+  const currentWeek = week ?? state?.week ?? 1;
+
+  const userById = new Map(users.map((u) => [u.user_id, u]));
+  // Roster id is Sleeper's stable identifier; the display name is not, so teams
+  // are keyed on the id and merely NAMED by the manager.
+  const teams = rosters.map((r) => {
+    const u = r.owner_id ? userById.get(r.owner_id) : null;
+    return {
+      name: u?.team_name ?? `Roster ${r.roster_id}`,
+      manager: u?.display_name ?? null,
+      rosterId: r.roster_id,
+      waiverPriority: r.waiverPosition,
+      wins: r.wins, losses: r.losses, ties: r.ties,
+      pointsFor: r.pointsFor, pointsAgainst: r.pointsAgainst,
+    };
+  });
+
+  const keyOf = (rosterId) => `${leagueKey}.t.${rosterId}`;
+
+  const league = {
+    league_key: leagueKey,
+    league_id: meta_.league_id,
+    name: meta_.name,
+    season: meta_.season,
+    num_teams: meta_.numTeams || rosters.length,
+    scoring_type: 'head',
+    scoring: JSON.stringify({ ...DEFAULT_SCORING, ...scoring }),
+    roster_slots: JSON.stringify(meta_.rosterSlots),
+    waiver_type: meta_.waiverType,
+    faab_budget: meta_.faabBudget,
+    trade_deadline: null,
+    playoff_start_week: meta_.playoffStartWeek,
+    end_week: meta_.playoffStartWeek + 2,
+    num_playoff_teams: meta_.numPlayoffTeams,
+    current_week: currentWeek,
+    is_demo: 0,
+    synced_at: Date.now(),
+  };
+  upsertMany('leagues', Object.keys(league), [league], ['league_key']);
+
+  const teamRows = teams.map((t) => ({
+    league_key: leagueKey, team_key: keyOf(t.rosterId), team_id: t.rosterId,
+    name: t.name, manager: t.manager, is_mine: 0,
+    faab_remaining: meta_.faabBudget, waiver_priority: t.waiverPriority,
+    wins: t.wins, losses: t.losses, ties: t.ties,
+    points_for: t.pointsFor, points_against: t.pointsAgainst,
+    moves: 0, trade_count: 0, logo: null, division: null,
+  }));
+  // Which roster is ours. Resolved from the Sleeper username rather than
+  // guessed from a team name, because display names are not unique and a wrong
+  // guess points the entire war room at somebody else's roster.
+  let mine = null;
+  if (username) {
+    const u = await sleeper.user(username).catch(() => null);
+    if (u) {
+      const r = rosters.find((x) => x.owner_id === u.user_id);
+      if (r) mine = keyOf(r.roster_id);
+    }
+  }
+  if (mine) for (const t of teamRows) t.is_mine = t.team_key === mine ? 1 : 0;
+
+  run('UPDATE teams SET is_mine = 0 WHERE league_key = ?', [leagueKey]);
+  upsertMany('teams', Object.keys(teamRows[0]), teamRows, ['league_key', 'team_key']);
+
+  // Rosters, by sleeper_id — the same link the weekly stats importer uses, so
+  // no name matching is involved anywhere in this path.
+  const bySleeper = new Map(
+    all('SELECT player_id, sleeper_id FROM players WHERE sleeper_id IS NOT NULL')
+      .map((p) => [String(p.sleeper_id), p.player_id])
+  );
+  const rosterRows = [];
+  let unknownPlayers = 0;
+  for (const r of rosters) {
+    const starters = new Set(r.starters.filter((id) => id && id !== '0'));
+    run('DELETE FROM rosters WHERE league_key = ? AND team_key = ? AND week = ?', [leagueKey, keyOf(r.roster_id), currentWeek]);
+    for (const sid of r.players) {
+      const pid_ = bySleeper.get(sid);
+      if (!pid_) { unknownPlayers++; continue; }
+      rosterRows.push({
+        league_key: leagueKey, team_key: keyOf(r.roster_id), player_id: pid_,
+        week: currentWeek, slot: starters.has(sid) ? 'ST' : 'BN',
+        is_starter: starters.has(sid) ? 1 : 0, acquired: 'sleeper',
+      });
+    }
+  }
+  if (rosterRows.length) {
+    upsertMany('rosters', Object.keys(rosterRows[0]), rosterRows, ['league_key', 'team_key', 'player_id', 'week']);
+  }
+
+  // This week's real pairings.
+  const pairs = await sleeper.leagueMatchups(leagueId, currentWeek).catch(() => []);
+  const matchupRows = [];
+  for (const [a, b] of pairs) {
+    for (const [x, y] of [[a, b], [b, a]]) {
+      matchupRows.push({
+        league_key: leagueKey, week: currentWeek, team_key: keyOf(x.roster_id),
+        opp_team_key: keyOf(y.roster_id), points: x.points || null, projected: null,
+        is_playoffs: currentWeek >= meta_.playoffStartWeek ? 1 : 0, source: 'sleeper',
+      });
+    }
+  }
+  if (matchupRows.length) {
+    upsertMany('matchups', Object.keys(matchupRows[0]), matchupRows, ['league_key', 'week', 'team_key']);
+  }
+
+  log.info(`sleeper league ${meta_.name}: ${teamRows.length} teams, ${rosterRows.length} roster spots, ${matchupRows.length / 2} matchups`);
+  return {
+    ok: true, league_key: leagueKey, name: meta_.name, season: meta_.season,
+    teams: teamRows.length, rosterSpots: rosterRows.length, matchups: matchupRows.length / 2,
+    week: currentWeek, unknownPlayers,
+    unmappedScoring: unmapped, unmappedSlots: meta_.unmappedSlots,
+    myTeam: mine ? teamRows.find((t) => t.team_key === mine)?.name ?? null : null,
+    scoringRules: Object.keys(scoring).length,
+  };
+}

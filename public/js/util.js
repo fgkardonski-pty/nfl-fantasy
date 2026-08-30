@@ -69,7 +69,32 @@ export function statusBadge(status) {
 
 // ---- API ------------------------------------------------------------------
 
+/**
+ * The league every request is scoped to.
+ *
+ * Held here rather than read from the server's "active league" so two leagues
+ * can be open in two tabs at once, and so switching in one tab cannot silently
+ * change what the command line operates on. Every request carries the league
+ * explicitly; nothing relies on server-side state that another client could
+ * have moved underneath it.
+ */
+let currentLeague = null;
+
+export function setLeague(key) {
+  currentLeague = key || null;
+  try { if (key) localStorage.setItem('oracle.league', key); } catch { /* private mode */ }
+}
+
+export function getLeague() {
+  if (currentLeague) return currentLeague;
+  try { return localStorage.getItem('oracle.league'); } catch { return null; }
+}
+
 export async function api(path, opts = {}) {
+  const league = getLeague();
+  if (league && !path.includes('league=') && path.startsWith('/api/')) {
+    path += (path.includes('?') ? '&' : '?') + 'league=' + encodeURIComponent(league);
+  }
   const res = await fetch(path, {
     method: opts.method ?? 'GET',
     headers: opts.body ? { 'content-type': 'application/json' } : {},

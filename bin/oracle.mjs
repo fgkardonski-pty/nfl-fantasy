@@ -18,7 +18,7 @@ import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextContestedPick } from '../src/engine/draft.mjs';
 import { uncoveredScoringRules } from '../src/engine/statline.mjs';
-import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly, importScheduleFromSleeper } from '../src/realdata.mjs';
+import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly, importScheduleFromSleeper, importSleeperLeague } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -214,6 +214,57 @@ const COMMANDS = {
     if (r.unmatched.length) {
       out(`  ${c.grey}not in the player pool (${r.unmatched.length}): ${r.unmatched.slice(0, 8).join(', ')}${r.unmatched.length > 8 ? ' …' : ''}${c.reset}`);
     }
+  },
+
+  async sleeper(opts) {
+    const sub = opts._[0];
+    if (sub === 'league') {
+      const id = opts.id ?? opts._[1];
+      if (!id) {
+        out(`${c.red}Usage:${c.reset} node bin/oracle.mjs sleeper league --id <league_id> [--user <username>]`);
+        out(`${c.grey}The league id is in the Sleeper URL: sleeper.com/leagues/<id>/team${c.reset}`);
+        process.exit(1);
+      }
+      const r = await importSleeperLeague(String(id), { username: opts.user ?? null });
+      if (!r.ok) { out(`${c.red}\u2717${c.reset} ${r.note}`); return; }
+
+      out(`${c.green}\u2713${c.reset} ${c.bold}${r.name}${c.reset} (${r.league_key})`);
+      out(`  ${r.teams} teams · ${r.rosterSpots} roster spots · ${r.matchups} matchups · week ${r.week}`);
+      out(`  ${r.scoringRules} scoring rules read from the league settings`);
+      if (r.myTeam) out(`  ${c.green}your team: ${c.bold}${r.myTeam}${c.reset}`);
+      else out(`  ${c.yellow}!${c.reset} no team flagged as yours — pass ${c.cyan}--user <your sleeper username>${c.reset}`);
+
+      // Anything unrecognised is surfaced, never dropped silently: an unmapped
+      // scoring rule scores zero forever and an unmapped slot is one the
+      // optimizer can never fill.
+      if (r.unmappedScoring?.length) {
+        out(`  ${c.yellow}scoring keys not understood (they will score ZERO):${c.reset} ${r.unmappedScoring.join(', ')}`);
+        out(`  ${c.grey}Send that list back — each one is either irrelevant or a bug.${c.reset}`);
+      }
+      if (r.unmappedSlots?.length) {
+        out(`  ${c.yellow}roster slots not understood:${c.reset} ${r.unmappedSlots.join(', ')}`);
+      }
+      if (r.unknownPlayers) {
+        out(`  ${c.grey}${r.unknownPlayers} rostered players are not in the local pool — run ${c.cyan}real seed${c.reset}${c.grey}.${c.reset}`);
+      }
+      out(`\n  ${c.grey}Both leagues now live side by side. Switch with the picker in the app,${c.reset}`);
+      out(`  ${c.grey}or on the command line with ${c.cyan}--league ${r.league_key}${c.reset}${c.grey}.${c.reset}`);
+      return;
+    }
+    out(`${c.red}Unknown sleeper action "${sub ?? ''}". Try: league --id <id> [--user <name>]${c.reset}`);
+    process.exit(1);
+  },
+
+  leagues() {
+    const list = S.listLeagues();
+    const active = S.activeLeagueKey();
+    rule(`LEAGUES — ${list.length} loaded`);
+    for (const l of list) {
+      const mark = l.league_key === active ? `${c.green}*${c.reset}` : ' ';
+      const kind = l.is_demo ? `${c.grey}demo${c.reset}` : l.league_key.startsWith('sleeper.') ? `${c.cyan}sleeper${c.reset}` : `${c.magenta}manual${c.reset}`;
+      out(`  ${mark} ${c.white}${pad(l.name, 26)}${c.reset}${pad(kind, 18)}${rpad(l.num_teams, 3)} teams  week ${l.current_week}  ${c.grey}${l.league_key}${c.reset}`);
+    }
+    out(`\n  ${c.grey}* = default when no --league is passed. Every command takes ${c.cyan}--league <key>${c.reset}${c.grey}.${c.reset}`);
   },
 
   rosters(opts) {
@@ -906,6 +957,11 @@ ${c.bold}EVERY WEEK${c.reset}
 ${c.bold}DRAFT DAY${c.reset}
   ${c.cyan}draft${c.reset} --slot N [--pick N] [--rounds N]
                           live board with VOR, VONA, tiers and survival probability
+
+${c.bold}LEAGUES${c.reset}
+  ${c.cyan}leagues${c.reset}                 every league loaded, and which is the default
+  ${c.cyan}sleeper league${c.reset} --id <id> [--user <name>]
+                          import a Sleeper league (settings, rosters, matchups)
 
 ${c.bold}DATA${c.reset}
   ${c.cyan}yahoo status${c.reset}            connection state and setup instructions

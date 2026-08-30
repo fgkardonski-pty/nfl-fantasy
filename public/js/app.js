@@ -2,7 +2,7 @@
  * War room shell: hash routing, league context, and the sidebar status block.
  * No framework, no build step — the whole client is ES modules served as-is.
  */
-import { h, api, $, $$, badge, errorBox, loading, ago, pct } from './util.js';
+import { h, api, $, $$, badge, errorBox, loading, ago, pct, setLeague, getLeague } from './util.js';
 
 const VIEWS = {
   warroom: () => import('./views/warroom.js'),
@@ -21,6 +21,16 @@ const ctx = { league: null, week: null };
 
 async function boot() {
   try {
+    // Resolve the league BEFORE anything else fetches, so no view ever renders
+    // one league's numbers under another league's name.
+    const { leagues, active } = await api('/api/leagues');
+    ctx.leagues = leagues ?? [];
+    const remembered = getLeague();
+    const valid = ctx.leagues.some((l) => l.league_key === remembered);
+    setLeague(valid ? remembered : (active ?? ctx.leagues[0]?.league_key ?? null));
+  } catch { /* first run: /api/league below reports it properly */ }
+
+  try {
     ctx.league = await api('/api/league');
   } catch (err) {
     // No league yet is a first-run state, not an error — send them to setup.
@@ -34,6 +44,31 @@ async function boot() {
   renderFoot();
   window.addEventListener('hashchange', route);
   route();
+}
+
+/**
+ * League picker.
+ *
+ * Two leagues under one roof, sharing only the player universe — which is
+ * correct, since the same athlete valued under two different rule sets is
+ * exactly what the scoring layer is for. Everything else is scoped by league
+ * key, and switching reloads rather than re-rendering so no view can be left
+ * holding data fetched for the other league.
+ */
+function leaguePicker() {
+  if (!ctx.leagues || ctx.leagues.length < 2) return null;
+  const current = getLeague();
+  const kind = (l) => (l.is_demo ? 'demo' : l.league_key.startsWith('sleeper.') ? 'sleeper' : 'yahoo');
+
+  return h('div.league-picker',
+    h('div.xs.mute', 'LEAGUE'),
+    h('select.league-select', {
+      onchange: (e) => { setLeague(e.target.value); location.reload(); },
+    }, ctx.leagues.map((l) => h('option', {
+      value: l.league_key,
+      selected: l.league_key === current || null,
+    }, `${l.name}  ·  ${kind(l)}`)))
+  );
 }
 
 function renderFirstRun(err) {
@@ -93,6 +128,7 @@ async function renderFoot() {
   const l = ctx.league;
   const foot = $('#foot');
   foot.replaceChildren(
+    leaguePicker(),
     h('div.row', h('span', l.name)),
     h('div.row', h('span.mute', 'week'), h('span.mono', l.current_week)),
     h('div', { style: { marginBottom: '4px' } },
