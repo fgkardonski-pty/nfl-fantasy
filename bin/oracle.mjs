@@ -236,6 +236,11 @@ const COMMANDS = {
 
       out(`${c.green}\u2713${c.reset} ${c.bold}${r.name}${c.reset} (${r.league_key})`);
       out(`  ${r.teams} teams · ${r.rosterSpots} roster spots · ${r.matchups} matchups · week ${r.week}`);
+      if (r.undrafted) {
+        out(`  ${c.yellow}This league has not drafted yet${c.reset} — every roster is empty, which is why there`);
+        out(`  ${c.grey}are no roster spots or matchups. Re-run this command after the draft.${c.reset}`);
+        out(`  ${c.grey}The draft board works now though: ${c.cyan}node bin/oracle.mjs draft --slot N --league ${r.league_key}${c.reset}`);
+      }
       out(`  ${r.scoringRules} scoring rules read from the league settings`);
       if (r.myTeam) out(`  ${c.green}your team: ${c.bold}${r.myTeam}${c.reset}`);
       else out(`  ${c.yellow}!${c.reset} no team flagged as yours — pass ${c.cyan}--user <your sleeper username>${c.reset}`);

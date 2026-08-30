@@ -10,6 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const { mapSleeperStats, mapSleeperUsage, SLEEPER_STAT_MAP } = await import('../src/providers/sleeper.mjs');
+const { PA_TIERS, YA_TIERS } = await import('../src/engine/statline.mjs');
 const { scoreStatLine } = await import('../src/engine/scoring.mjs');
 const { expectedScore } = await import('../src/engine/statline.mjs');
 const LEAGUE = JSON.parse(await import('node:fs').then((fs) => fs.promises.readFile('fantazy-fulzbol.json', 'utf8'))).scoring;
@@ -156,13 +157,40 @@ test('usage shares are computed against team totals, or left null', () => {
   assert.equal(mapSleeperUsage({}), null);
 });
 
-test('every mapped target is a scoring key this league recognises', () => {
-  // Guards against a typo in the map producing a key nothing ever reads —
-  // which would score zero forever without any error.
+test('every mapped target is a canonical scoring key, not a typo', () => {
+  // Guards against a typo in the map producing a key nothing ever reads, which
+  // would score zero forever without raising anything. The map now serves two
+  // leagues with different rules, so a target being absent from THIS league's
+  // config is fine — what is not fine is a target no league could ever score.
   const known = new Set(Object.keys(LEAGUE).filter((k) => !k.startsWith('_') && k !== 'bonuses'));
-  const extra = new Set(['def_pts_allowed', 'def_yds_allowed', 'ret_yd', 'ret_td']);
+  for (const t of [...PA_TIERS, ...YA_TIERS]) known.add(t.key);
+  for (const k of ['def_pts_allowed', 'def_yds_allowed', 'ret_yd', 'ret_td',
+    // Keys this league does not use but another does. Listed explicitly so a
+    // genuine typo still fails rather than being waved through by a pattern.
+    'def_ff', 'st_ff', 'def_st_ff', 'st_fum_rec',
+    'fg_50_59', 'fg_60p', 'fg_miss', 'pat_miss', 'pass_sacked']) known.add(k);
+
   for (const target of Object.values(SLEEPER_STAT_MAP)) {
     if (target == null) continue;
-    assert.ok(known.has(target) || extra.has(target), `${target} is not a scoring key in this league`);
+    assert.ok(known.has(target), `${target} is not a canonical scoring key anywhere`);
   }
+});
+
+test('forced-fumble keys stay distinct so a league cannot pay twice for one play', () => {
+  // Sleeper reports ff, st_ff and def_st_ff separately and a league may score
+  // each on its own. Folding them into one canonical key would apply every
+  // rule to a single count and inflate the whole category.
+  const targets = ['ff', 'st_ff', 'def_st_ff'].map((k) => SLEEPER_STAT_MAP[k]);
+  assert.equal(new Set(targets).size, 3, 'three source keys, three distinct targets');
+});
+
+test('a defence is paid for yards allowed when the league scores them', async () => {
+  const { expectedScore } = await import('../src/engine/statline.mjs');
+  const scoring = { def_sack: 1, def_ya_300_349: 2, def_ya_400_449: -1 };
+
+  // 320 yards allowed sits in the paying bucket; 420 in the penalised one.
+  const good = expectedScore({ def_sack: 2, def_yds_allowed: 320 }, scoring);
+  const bad = expectedScore({ def_sack: 2, def_yds_allowed: 420 }, scoring);
+  assert.ok(good > bad, 'fewer yards allowed is worth more');
+  assert.ok(good > 2, 'the yardage tier actually pays, rather than scoring zero');
 });

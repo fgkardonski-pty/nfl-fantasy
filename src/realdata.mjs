@@ -1032,6 +1032,11 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
     teams: teamRows.length, rosterSpots: rosterRows.length, matchups: matchupRows.length / 2,
     week: currentWeek, unknownPlayers,
     unmappedScoring: unmapped, unmappedSlots: meta_.unmappedSlots,
+    // A league whose rosters exist but hold no players has not drafted. That is
+    // a completely different situation from a failed import, and reporting it
+    // as "0 roster spots" invites a hunt for a bug that is not there.
+    undrafted: rosterRows.length === 0 && rosters.every((r) => !r.players.length),
+    status: meta_.status ?? null,
     myTeam: mine ? teamRows.find((t) => t.team_key === mine)?.name ?? null : null,
     scoringRules: Object.keys(scoring).length,
   };

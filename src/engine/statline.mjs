@@ -218,6 +218,48 @@ const PA_TIERS = [
   { key: 'def_pa_35p', lo: 34.5, hi: Infinity },
 ];
 
+/**
+ * Yards-allowed tiers, the same shape as the points-allowed ones.
+ *
+ * Some leagues — the Sleeper league here is one — pay a defense on total yards
+ * surrendered as well as points. Without these the whole category scores zero,
+ * which is precisely the failure that made defenses worth half their value in
+ * the other league.
+ */
+const YA_TIERS = [
+  { key: 'def_ya_0_100', lo: 0, hi: 100 },
+  { key: 'def_ya_100_199', lo: 100, hi: 200 },
+  { key: 'def_ya_200_299', lo: 200, hi: 300 },
+  { key: 'def_ya_300_349', lo: 300, hi: 350 },
+  { key: 'def_ya_350_399', lo: 350, hi: 400 },
+  { key: 'def_ya_400_449', lo: 400, hi: 450 },
+  { key: 'def_ya_450_499', lo: 450, hi: 500 },
+  { key: 'def_ya_500_549', lo: 500, hi: 550 },
+  { key: 'def_ya_550p', lo: 550, hi: Infinity },
+];
+
+/**
+ * Expected value of the yards-allowed tiers given an AVERAGE yards allowed.
+ *
+ * Yards allowed is far less variable week to week than points allowed — a
+ * defense giving up 330 a game rarely gives up 100 — so the coefficient of
+ * variation is much lower than the 0.45 used for points.
+ */
+export function expectedYardsAllowedValue(meanAllowed, scoring, cv = 0.22) {
+  if (!(meanAllowed > 0)) return 0;
+  const sd = Math.max(1e-6, meanAllowed * cv);
+  const shape = (meanAllowed / sd) ** 2;
+  const scale = (sd * sd) / meanAllowed;
+  let pts = 0;
+  for (const t of YA_TIERS) {
+    const rate = Number(scoring?.[t.key] ?? 0);
+    if (!rate) continue;
+    const p = (t.hi === Infinity ? 1 : gammaCdf(t.hi, shape, scale)) - gammaCdf(t.lo, shape, scale);
+    pts += Math.max(0, p) * rate;
+  }
+  return pts;
+}
+
 export function expectedPointsAllowedValue(meanAllowed, scoring, cv = 0.45) {
   if (!(meanAllowed > 0)) return 0;
   const sd = Math.max(1e-6, meanAllowed * cv);
@@ -287,6 +329,11 @@ export function expectedScore(statLine, scoring) {
   const hasTier = PA_TIERS.some((t) => statLine[t.key] != null);
   if (statLine.def_pts_allowed != null && !hasTier) {
     total += expectedPointsAllowedValue(Number(statLine.def_pts_allowed), scoring);
+  }
+  // Yards allowed, same treatment and for the same reason.
+  const hasYaTier = YA_TIERS.some((t) => statLine[t.key] != null);
+  if (statLine.def_yds_allowed != null && !hasYaTier) {
+    total += expectedYardsAllowedValue(Number(statLine.def_yds_allowed), scoring);
   }
   return total;
 }
@@ -394,4 +441,4 @@ export function expectedPointsAtRank(pos, rank, scoring) {
   return pivot + k * (raw - pivot);
 }
 
-export { ANCHORS, DERIVED };
+export { ANCHORS, DERIVED, PA_TIERS, YA_TIERS };

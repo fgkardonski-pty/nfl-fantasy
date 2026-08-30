@@ -200,7 +200,6 @@ export const SLEEPER_STAT_MAP = {
   def_4_and_stop: 'def_4th_down_stop',
   def_forced_punts: null,          // known key, this league does not score it
   blk_kick_ret_yd: 'def_ret_yd',
-  def_st_ff: null,
 
   // Points allowed, as Sleeper's own bucket flags. These are the exact tier a
   // defence landed in for a game that has been played, and they map straight
@@ -216,6 +215,39 @@ export const SLEEPER_STAT_MAP = {
   pts_allow_21_27: 'def_pa_21_27',
   pts_allow_28_34: 'def_pa_28_34',
   pts_allow_35p: 'def_pa_35p',
+
+  // Yards allowed, tiered the same way. A league that pays on yardage as well
+  // as points — the Sleeper league does — scored nothing for the whole category
+  // until these existed.
+  yds_allow_0_100: 'def_ya_0_100',
+  yds_allow_100_199: 'def_ya_100_199',
+  yds_allow_200_299: 'def_ya_200_299',
+  yds_allow_300_349: 'def_ya_300_349',
+  yds_allow_350_399: 'def_ya_350_399',
+  yds_allow_400_449: 'def_ya_400_449',
+  yds_allow_450_499: 'def_ya_450_499',
+  yds_allow_500_549: 'def_ya_500_549',
+  yds_allow_550p: 'def_ya_550p',
+
+  // Sleeper reports forced fumbles and special-teams plays under several keys
+  // that mean different things. They are kept DISTINCT rather than folded
+  // together: a league can score `ff` and `st_ff` separately, and unifying them
+  // would apply both rules to one count and double the category.
+  ff: 'def_ff',
+  st_ff: 'st_ff',
+  def_st_ff: 'def_st_ff',
+  st_fum_rec: 'st_fum_rec',
+
+  // Kicking, at the finer granularity some leagues use. fgm_50p stays mapped
+  // for leagues that score a single 50+ bucket; a league using the split
+  // buckets simply has no rule under the coarse key, so nothing double counts.
+  fgm_50_59: 'fg_50_59',
+  fgm_60p: 'fg_60p',
+  fgmiss: 'fg_miss',
+  xpmiss: 'pat_miss',
+
+  // A sack taken, charged against the quarterback.
+  pass_sack: 'pass_sacked',
 };
 
 /**
