@@ -315,6 +315,45 @@ const COMMANDS = {
     out(`${c.green}\u2713${c.reset} ${c.bold}${match.name}${c.reset} is now your team in ${l.name}.`);
   },
 
+  rules(opts) {
+    const l = league(opts);
+    rule(`${l.name} — RULES AS IMPORTED`);
+
+    out(`  ${c.bold}Roster${c.reset} (${l.rosterSlots.reduce((a, s) => a + s.count, 0)} spots)`);
+    out(`    ${l.rosterSlots.map((s) => `${s.slot}\u00d7${s.count}`).join('  ')}`);
+    out(`    ${c.grey}starting lineup: ${l.slots.join(', ')}${c.reset}`);
+
+    const scoring = Object.entries(l.scoring)
+      .filter(([k, v]) => typeof v === 'number' && v !== 0 && !k.startsWith('_'));
+    const group = (prefix, label) => {
+      const rows = scoring.filter(([k]) => prefix.test(k));
+      if (!rows.length) return;
+      out(`\n  ${c.bold}${label}${c.reset}`);
+      for (const [k, v] of rows.sort((a, b) => a[0].localeCompare(b[0]))) {
+        out(`    ${pad(k, 24)}${c.cyan}${v > 0 ? '+' : ''}${v}${c.reset}`);
+      }
+    };
+    group(/^pass_|^pick_six/, 'Passing');
+    group(/^rush_/, 'Rushing');
+    group(/^rec/, 'Receiving');
+    group(/^(fg|pat)/, 'Kicking');
+    group(/^def_pa_/, 'Defense — points allowed');
+    group(/^def_ya_/, 'Defense — yards allowed');
+    group(/^def_(?!pa_|ya_)/, 'Defense — other');
+    group(/^(ret_|two_pt|fum_|st_)/, 'Misc');
+
+    // The check that matters: a rule the model never feeds scores zero forever.
+    const uncovered = uncoveredScoringRules(l.scoring);
+    out('');
+    if (uncovered.length) {
+      out(`  ${c.red}${uncovered.length} rules score points but nothing in the model produces them:${c.reset}`);
+      for (const u of uncovered) out(`    ${c.red}${pad(u.stat, 24)}${c.reset}${c.grey}${u.points} pts — ${u.note ?? 'no archetype supplies this'}${c.reset}`);
+      out(`  ${c.grey}Each is a category valued at zero. Send this list back.${c.reset}`);
+    } else {
+      out(`  ${c.green}every scoring rule is fed by the model.${c.reset}`);
+    }
+  },
+
   leagues() {
     const list = S.listLeagues();
     const active = S.activeLeagueKey();
@@ -1020,6 +1059,7 @@ ${c.bold}DRAFT DAY${c.reset}
 
 ${c.bold}LEAGUES${c.reset}
   ${c.cyan}leagues${c.reset}                 every league loaded, and which is the default
+  ${c.cyan}rules${c.reset}                   a league's roster and scoring exactly as imported
   ${c.cyan}sleeper league${c.reset} --id <id> [--user <name>]
                           import a Sleeper league (settings, rosters, matchups);
                           re-run with no --id to re-sync the remembered league

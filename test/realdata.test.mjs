@@ -550,3 +550,33 @@ test('roster completeness names the positions a partial team cannot field', asyn
   assert.ok(!mine.missingPositions.includes('W/R'));
   run("DELETE FROM rosters WHERE league_key = 'test.l.complete'");
 });
+
+test('a complete rule set is not padded with platform defaults', () => {
+  // The leak this closes: DEFAULT_SCORING was merged under every league, so a
+  // league that penalises only sub-20 field-goal misses silently inherited the
+  // default -1 on EVERY miss. Once a config is the whole rule set, a rule it
+  // does not mention is a rule the league does not have.
+  setupRealLeague({
+    leagueKey: 'test.l.partial', name: 'Partial', season: 2026, numTeams: 2,
+    scoring: { rec: 0.5 }, myTeamName: 'P',
+    rosterSlots: [{ slot: 'WR', count: 1 }],
+  });
+  setupRealLeague({
+    leagueKey: 'test.l.complete', name: 'Complete', season: 2026, numTeams: 2,
+    scoring: { rec: 0.5 }, scoringComplete: true, myTeamName: 'C',
+    rosterSlots: [{ slot: 'WR', count: 1 }],
+  });
+
+  const partial = S.getLeague('test.l.partial').scoring;
+  const complete = S.getLeague('test.l.complete').scoring;
+
+  // Both honour what was entered.
+  assert.equal(partial.rec, 0.5);
+  assert.equal(complete.rec, 0.5);
+  // A half-entered config still gets sensible defaults, which is right while
+  // someone is mid-transcription.
+  assert.ok(partial.rush_td > 0, 'an incomplete config is filled in');
+  // A complete one gets nothing it did not ask for.
+  assert.equal(complete.rush_td, undefined, 'a complete config is taken at its word');
+  assert.equal(complete.fg_miss, undefined, 'including the default that leaked before');
+});

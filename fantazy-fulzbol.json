@@ -1465,6 +1465,9 @@
   "waiverType": "priority",
   "faabBudget": 0,
 
+  "_scoringComplete": "The scoring block below is the WHOLE rule set, transcribed from Yahoo's settings page. With this set, no defaults are merged underneath it — which matters because the platform default penalises every missed field goal and this league penalises only those under twenty yards.",
+  "scoringComplete": true,
+
   "scoring": {
     "_passing": "0.5/completion and 0.5/first down are the two categories generic rankings ignore entirely, and together they are worth ~19 pts/game to an elite QB.",
     "pass_cmp": 0.5,

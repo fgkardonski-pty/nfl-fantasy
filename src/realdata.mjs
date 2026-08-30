@@ -213,7 +213,14 @@ export function importAdpFromText(text, { season, source = 'manual' } = {}) {
  */
 export function setupRealLeague(cfg) {
   const leagueKey = cfg.leagueKey ?? `real.l.${cfg.season}`;
-  const scoring = { ...DEFAULT_SCORING, ...(cfg.scoring ?? {}) };
+  // Defaults fill the gaps in a partially-entered config, which is the right
+  // behaviour while someone is still transcribing a settings page. Once the
+  // transcription IS the whole rule set, they stop being helpful and start
+  // inventing: this league penalises only sub-20 field-goal misses, and the
+  // default -1 on every miss quietly applied to all of them.
+  const scoring = cfg.scoringComplete
+    ? { ...(cfg.scoring ?? {}) }
+    : { ...DEFAULT_SCORING, ...(cfg.scoring ?? {}) };
 
   const league = {
     league_key: leagueKey,
@@ -942,7 +949,12 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
     season: meta_.season,
     num_teams: meta_.numTeams || rosters.length,
     scoring_type: 'head',
-    scoring: JSON.stringify({ ...DEFAULT_SCORING, ...scoring }),
+    // Sleeper's scoring_settings is the COMPLETE rule set for the league, so
+    // no defaults are merged under it. Doing so would invent rules the league
+    // does not have — a league that scores nothing for a shutout would inherit
+    // ten points for one, and every defense in it would be overvalued by a
+    // category its managers never play for.
+    scoring: JSON.stringify(scoring),
     roster_slots: JSON.stringify(meta_.rosterSlots),
     waiver_type: meta_.waiverType,
     faab_budget: meta_.faabBudget,
