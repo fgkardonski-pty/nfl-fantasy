@@ -437,3 +437,66 @@ export function nextContestedPick(currentPick, slot, numTeams, rounds) {
   while (mine.has(end + 1)) end++;
   return picks.find((p) => p > end) ?? end + numTeams;
 }
+
+/**
+ * Which draft seat made each pick, from the pick order alone.
+ *
+ * A snake draft's seat assignment is fully determined by the pick number and
+ * the league size, so a complete ordered list of picks is enough to rebuild
+ * every team's roster without knowing anything else. That matters because the
+ * live board records the order picks came off — which is exactly this list.
+ *
+ * @param {number} pick   1-indexed overall pick number
+ * @param {number} numTeams
+ * @returns {number} 1-indexed seat
+ */
+export function seatForPick(pick, numTeams) {
+  const round = Math.ceil(pick / numTeams);
+  const inRound = pick - (round - 1) * numTeams;
+  return round % 2 === 1 ? inRound : numTeams - inRound + 1;
+}
+
+/**
+ * Split an ordered list of drafted player ids into one roster per seat.
+ *
+ * Returns `verified: false` when the reconstruction disagrees with the picks
+ * the manager marked as their own. That disagreement is the signal that the
+ * pick log has a gap — a pick nobody marked shifts every later pick by one seat,
+ * so a log that is merely incomplete produces a full set of rosters that are
+ * confidently, invisibly wrong. Better to hand back our own roster, which we
+ * know directly, than sixteen plausible ones built on a broken offset.
+ *
+ * @param {string[]} drafted  player ids in pick order
+ * @param {number} numTeams
+ * @param {Object} [opts]
+ * @param {number} [opts.mySeat]     our seat, 1-indexed
+ * @param {string[]} [opts.mine]     the picks we marked as ours, in order
+ */
+export function rostersFromPickOrder(drafted, numTeams, { mySeat = null, mine = null } = {}) {
+  const seats = new Map();
+  for (let i = 0; i < drafted.length; i++) {
+    const seat = seatForPick(i + 1, numTeams);
+    if (!seats.has(seat)) seats.set(seat, []);
+    seats.get(seat).push(drafted[i]);
+  }
+
+  let verified = null;
+  let mismatch = null;
+  if (mySeat != null && Array.isArray(mine)) {
+    const derived = seats.get(mySeat) ?? [];
+    const a = [...derived].sort(), b = [...mine].sort();
+    verified = a.length === b.length && a.every((x, i) => x === b[i]);
+    if (!verified) {
+      mismatch = {
+        derivedCount: derived.length,
+        markedCount: mine.length,
+        // The picks the snake order says are ours but we never claimed, and
+        // vice versa. Either list being non-empty means the log is off.
+        derivedNotMarked: derived.filter((x) => !mine.includes(x)),
+        markedNotDerived: mine.filter((x) => !derived.includes(x)),
+      };
+    }
+  }
+
+  return { seats, verified, mismatch, picks: drafted.length, rounds: Math.ceil(drafted.length / numTeams) };
+}

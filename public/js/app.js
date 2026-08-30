@@ -106,6 +106,15 @@ async function renderFoot() {
   // Championship odds in the sidebar: the number the whole platform optimises.
   try {
     const o = await api('/api/outlook');
+    // No simulation means no odds. Printing 0.0% beside "playoffs 100%" — which
+    // is what an unsimulated league produced — reads as a real standing.
+    if (o.ready === false) {
+      foot.prepend(h('div', { style: { marginBottom: '10px' } },
+        h('div.xs.mute', 'CHAMPIONSHIP ODDS'),
+        h('div.mono', { style: { fontSize: '20px', fontWeight: '650' } }, '—'),
+        h('div.xs.mute', 'no rosters saved')));
+      return;
+    }
     const mine = o.standings.find((s) => s.is_mine);
     if (mine) {
       foot.prepend(h('div', { style: { marginBottom: '10px' } },

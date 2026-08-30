@@ -17,6 +17,8 @@ export async function render(root, ctx) {
     data = await api(`/api/warroom${ctx.week ? `?week=${ctx.week}` : ''}`);
   } catch (err) { root.replaceChildren(errorBox(err)); return; }
 
+  if (data.ready === false) return root.replaceChildren(notReady(data));
+
   const { decision, sim, posture, me, opponent, week } = data;
   const rec = decision.recommended;
 
@@ -229,5 +231,35 @@ function benchTable(roster, lineup) {
         h('td.right', why('why?', () => componentBreakdown(p)))
       ))
     )
+  );
+}
+
+
+/**
+ * What this screen shows when it cannot answer.
+ *
+ * The state it replaces: a 50.0% win probability over zero simulations, badged
+ * COIN-FLIP, above the sentence "play it straight" — a recommendation, in the
+ * exact shape of a real one, computed from an empty roster. A manager reading
+ * that has no way to tell it apart from a genuine coin flip in week 12.
+ */
+function notReady(d) {
+  const mine = d.reason === 'no-roster';
+  return frag(
+    h('div.page-head',
+      h('div',
+        h('h2', `Week ${d.week} — ${d.me?.name ?? ''}`),
+        h('div.sub', d.opponent ? `vs ${d.opponent.name}` : 'No opponent scheduled'))),
+    empty('◇', d.note, mine
+      ? 'Nothing here can be computed until your team is saved.'
+      : 'Their picks are not in the database yet.'),
+    mine ? h('div.card.accent',
+      h('h3', 'Save your drafted team'),
+      h('p', 'Your draft is still only in the browser. Open the Draft Room — the marked picks are held in local storage — and press ',
+        h('b', 'save team to database'), '. That writes the roster the war room, waivers, trades and the streamer all read from.'),
+      h('p.mute.xs', 'If the Draft Room is empty too, the picks are gone from this browser and the roster has to be re-entered.'),
+    ) : h('div.card',
+      h('h3', `${d.opponent?.name ?? 'Your opponent'} has no saved roster`),
+      h('p', 'Your own lineup can still be optimised for expected points, but win probability needs both sides. Saving the full draft board fills in every team at once.')),
   );
 }

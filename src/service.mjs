@@ -60,6 +60,23 @@ export function getLeague(leagueKey = activeLeagueKey()) {
   };
 }
 
+/**
+ * Seat-to-manager map for the draft, seat 1 first.
+ *
+ * Only the operator can supply this — the pick order tells us which SEAT made
+ * each pick, never which manager sat there. Without it opponents' rosters are
+ * real but anonymous, and guessing a name onto a seat would put the wrong
+ * roster on our week 1 opponent.
+ */
+export function draftOrder(leagueKey) {
+  const raw = meta.get(`draft_order:${leagueKey}`);
+  if (!raw) return null;
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) && arr.length ? arr : null;
+  } catch { return null; }
+}
+
 export const getTeams = (leagueKey) =>
   all('SELECT * FROM teams WHERE league_key = ? ORDER BY wins DESC, points_for DESC', [leagueKey]);
 
@@ -516,6 +533,25 @@ export function seasonOutlook(league, { sims = config.sims.season, seed = config
     const dist = teamWeekDistribution(neutral, league.slots);
     return { ...t, dist, is_mine: !!t.is_mine };
   });
+  // Every team scoring zero is not a league of equals, it is a league with no
+  // data. Simulated anyway, the ties break the same way in every iteration —
+  // same seed, same degenerate ordering — and the report comes back with a team
+  // on 100% playoff odds and 100% title odds. That is the most confident number
+  // in the app produced from the least information in it.
+  const withRosters = enriched.filter((t) => t.dist.starters.length).length;
+  if (withRosters < 2) {
+    return {
+      ready: false,
+      reason: 'no-rosters',
+      results: [],
+      teams: enriched,
+      teamsWithRosters: withRosters,
+      note: withRosters === 0
+        ? 'No team in the league has a saved roster, so there is nothing to simulate.'
+        : 'Only one team has a saved roster. A season simulation needs opponents to play against.',
+    };
+  }
+
   const results = simulateSeason({
     teams: enriched,
     schedule: scheduleFor(league),
@@ -526,7 +562,7 @@ export function seasonOutlook(league, { sims = config.sims.season, seed = config
     seed,
     currentWeek: week,
   });
-  return { results, teams: enriched };
+  return { ready: true, results, teams: enriched, teamsWithRosters: withRosters };
 }
 
 let outlookCache = { key: null, value: null, at: 0 };
@@ -551,6 +587,28 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
   const { oppKey, source: oppSource } = opponentForWeek(league, me.team_key, week);
   const opp = oppKey ? get('SELECT * FROM teams WHERE league_key = ? AND team_key = ?', [league.league_key, oppKey]) : null;
   const oppRoster = oppKey ? rosterOf(league.league_key, oppKey, week) : [];
+
+  // Two rosters can be empty, and neither can be simulated. Returning a
+  // decision anyway produced the worst output in the app: a 50.0% win
+  // probability over ZERO simulations, badged COIN-FLIP, above the sentence
+  // "play it straight" — advice, in the shape of a real answer, derived from
+  // nothing at all. An empty roster is a setup step the manager has not done,
+  // and saying so is the only useful thing this function can do about it.
+  if (!myRoster.length || !oppRoster.length) {
+    return {
+      week,
+      ready: false,
+      reason: !myRoster.length ? 'no-roster' : 'no-opponent-roster',
+      me: { ...me, projection: null },
+      opponent: opp ? { ...opp, projection: null, source: oppSource } : null,
+      opponentSource: oppSource,
+      myRosterSize: myRoster.length,
+      oppRosterSize: oppRoster.length,
+      note: !myRoster.length
+        ? 'No players are saved to your team, so there is nothing to project, start, or simulate.'
+        : `${opp?.name ?? 'Your opponent'} has no saved roster, so there is nothing to simulate against.`,
+    };
+  }
   const oppProj = project(league, oppRoster, week);
   const oppBest = optimalLineup(oppProj, league.slots, (p) => p.mean);
   const oppStarters = oppBest.lineup.map((l) => l.player).filter(Boolean);
@@ -580,6 +638,7 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
 
   return {
     week,
+    ready: true,
     me: { ...me, projection: round(decision.recommended.mean, 1) },
     opponent: opp ? { ...opp, projection: round(sim.oppMean, 1), source: oppSource } : null,
     opponentSource: oppSource,

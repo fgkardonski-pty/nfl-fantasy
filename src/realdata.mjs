@@ -340,6 +340,14 @@ export function setupRealLeague(cfg) {
     log.warn(`schedule names not in the team list, ignored: ${[...unknownTeams].join(', ')}`);
   }
 
+  // The draft seat order, if the operator has read it off Yahoo. Stored rather
+  // than derived because nothing in the pick log carries it.
+  if (Array.isArray(cfg.draftOrder) && cfg.draftOrder.length) {
+    const unknown = cfg.draftOrder.filter((n) => n && !keyOf.has(n));
+    if (unknown.length) log.warn(`draftOrder names not in the team list: ${unknown.join(', ')}`);
+    meta.set(`draft_order:${leagueKey}`, JSON.stringify(cfg.draftOrder));
+  }
+
   meta.set('active_league', leagueKey);
   log.info(`real league configured: ${league.name} — ${teamRows.length} teams, ${matchupRows.length / 2} known matchups`);
   return { league_key: leagueKey, teams: teamRows.length, matchups: matchupRows.length / 2, unknownTeams: [...unknownTeams], staleTeams: stale.map((r) => r.name) };

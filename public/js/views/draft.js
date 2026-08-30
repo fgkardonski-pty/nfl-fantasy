@@ -179,12 +179,35 @@ export async function render(root) {
       try {
         const r = await api('/api/draft/commit', {
           method: 'POST',
-          body: { mine: state.mine, drafted: state.drafted },
+          // The draft slot is what turns the pick order into per-seat rosters,
+          // so every OTHER team gets saved too rather than only ours.
+          body: { mine: state.mine, drafted: state.drafted, slot: state.slot },
         });
         saveBtn.textContent = `saved ${r.saved} \u2713`;
+
+        let extra;
+        const o = r.opponents ?? {};
+        if (o.teams > 0) {
+          extra = `\n\nRebuilt ${o.teams} opponent rosters from the pick order (${o.written} players), so`
+            + ' win probability, playoff odds and trades all have a real league to work with.';
+        } else if (o.skipped === 'no-draft-order') {
+          extra = '\n\nOpponents were NOT saved: the pick order says which SEAT made each pick, but not'
+            + ' which manager sat there. Add a "draftOrder" list (seat 1 first) to the league config and'
+            + ' save again to fill in all 16 teams.';
+        } else if (o.skipped === 'pick-log-inconsistent') {
+          const m = o.mismatch ?? {};
+          extra = `\n\nOpponents were NOT saved: the pick log does not line up with your own picks`
+            + ` (snake order gives seat ${state.slot} ${m.derivedCount} picks, you marked ${m.markedCount}).`
+            + ' A pick that was never marked shifts every later pick by one seat, which would hand every'
+            + ' team someone else\u2019s roster. Your own team was saved.';
+        } else if (o.skipped === 'no-slot') {
+          extra = '\n\nOpponents were not saved because no draft slot is set.';
+        } else {
+          extra = '';
+        }
+
         alert(`Saved ${r.saved} players to ${r.team} for week ${r.week}`
-          + ` (${r.starters} starters, ${r.bench} bench).\n\n`
-          + 'Your team now survives a cleared browser, and the War Room, Waivers and Trades pages can see it.');
+          + ` (${r.starters} starters, ${r.bench} bench).` + extra);
       } catch (err) {
         saveBtn.textContent = 'save team';
         alert('Could not save: ' + (err?.message ?? err));

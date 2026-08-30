@@ -7,6 +7,19 @@ export async function render(root) {
   try { d = await api('/api/outlook'); }
   catch (err) { root.replaceChildren(errorBox(err)); return; }
 
+  if (d.ready === false) {
+    return root.replaceChildren(
+      h('div.page-head', h('div',
+        h('h2', 'Season Outlook'),
+        h('div.sub', 'No simulation run'))),
+      h('div.empty', h('div.big', '▲'), h('div', d.note),
+        h('div.small.mute.mt-s', 'Save the drafted rosters and this fills in.')),
+      h('div.card',
+        h('h3', 'Why this is blank rather than showing odds'),
+        h('p', 'With every team projected at zero the simulation still runs, and the ties break identically in every iteration — so it reports a team on 100% playoff odds and 100% championship odds. That was the most confident number in the app, produced from the least information in it.')),
+    );
+  }
+
   const mine = d.standings.find((s) => s.is_mine);
 
   root.replaceChildren(

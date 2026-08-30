@@ -16,7 +16,7 @@ import * as yahoo from '../providers/yahoo/client.mjs';
 import * as sync from '../providers/yahoo/sync.mjs';
 import { JOBS, addNews } from '../research/jobs.mjs';
 import { daemon } from '../research/daemon.mjs';
-import { recommendPick, snakePicks, nextContestedPick } from '../engine/draft.mjs';
+import { recommendPick, snakePicks, nextContestedPick, rostersFromPickOrder, seatForPick } from '../engine/draft.mjs';
 import { computeVor, tierize, tierSummary } from '../engine/vor.mjs';
 import { evaluateOffer } from '../engine/trades.mjs';
 import { optimalLineup, lineupMarginals } from '../engine/optimizer.mjs';
@@ -105,6 +105,10 @@ export function buildApi() {
       playoffTeams: league.num_playoff_teams,
       playoffStartWeek: league.playoff_start_week,
       standings: outlook.results,
+      ready: outlook.ready !== false,
+      reason: outlook.reason ?? null,
+      note: outlook.note ?? null,
+      teamsWithRosters: outlook.teamsWithRosters ?? null,
     };
   });
 
@@ -425,15 +429,92 @@ export function buildApi() {
       }),
       ), ['league_key', 'team_key', 'player_id', 'week']);
 
-    // The full pick order, so "who else took whom" survives too.
+    // Every OTHER team's roster, rebuilt from the pick order.
+    //
+    // A snake draft's seat is fully determined by pick number and league size,
+    // so the ordered pick log is enough to reconstruct all sixteen rosters. This
+    // is what makes the rest of the platform work at all: without opponents
+    // there is nothing to simulate a matchup against, no league to price a trade
+    // in, and no field to compute playoff odds over — every one of those screens
+    // was reporting zeroes.
+    //
+    // It needs the seat-to-manager map, which only the operator has. Without it
+    // the seats are real but anonymous, and guessing which name sat where would
+    // put the wrong roster on our week 1 opponent.
+    const mySeat = int(body?.slot, 0) || null;
+    const order = S.draftOrder(league.league_key);
+    let opponents = { written: 0, teams: 0, skipped: null, verified: null };
+
+    if (drafted.length && mySeat) {
+      const rebuilt = rostersFromPickOrder(drafted, league.num_teams, { mySeat, mine });
+      opponents.verified = rebuilt.verified;
+      opponents.mismatch = rebuilt.mismatch;
+
+      if (rebuilt.verified === false) {
+        // A single unmarked pick shifts every later pick by one seat, so an
+        // incomplete log yields sixteen rosters that are wrong in a way nothing
+        // downstream can detect. Our own roster is known directly and is kept.
+        opponents.skipped = 'pick-log-inconsistent';
+      } else if (!order) {
+        opponents.skipped = 'no-draft-order';
+      } else {
+        const teamByName = new Map(S.getTeams(league.league_key).map((t) => [t.name, t]));
+        const known = new Set(all('SELECT player_id FROM players').map((r) => r.player_id));
+        const rows = [];
+        for (const [seat, ids] of rebuilt.seats) {
+          const name = order[seat - 1];
+          const team = name ? teamByName.get(name) : null;
+          if (!team || team.team_key === me.team_key) continue;
+          run('DELETE FROM rosters WHERE league_key = ? AND team_key = ? AND week = ?',
+            [league.league_key, team.team_key, week]);
+          const roster = ids.filter((id) => known.has(id))
+            .map((id) => all('SELECT * FROM players WHERE player_id = ?', [id])[0]).filter(Boolean);
+          if (!roster.length) continue;
+          // Each opponent gets a legal starting lineup too, so their projection
+          // reflects a lineup a manager would actually field.
+          const oppValued = S.draftValues(league, roster);
+          const oppLineup = optimalLineup(oppValued, league.rosterSlots, (x) => x.mean);
+          const oppSlot = new Map();
+          for (const sl of oppLineup.lineup) {
+            if (sl.player && !sl.player.__phantom) oppSlot.set(sl.player.player_id, sl.slot);
+          }
+          for (const pl of roster) {
+            rows.push({
+              league_key: league.league_key, team_key: team.team_key, player_id: pl.player_id,
+              week, slot: oppSlot.get(pl.player_id) ?? 'BN',
+              is_starter: oppSlot.has(pl.player_id) ? 1 : 0, acquired: 'draft',
+            });
+          }
+          opponents.teams++;
+        }
+        if (rows.length) {
+          upsertMany('rosters',
+            ['league_key', 'team_key', 'player_id', 'week', 'slot', 'is_starter', 'acquired'],
+            rows, ['league_key', 'team_key', 'player_id', 'week']);
+        }
+        opponents.written = rows.length;
+      }
+    } else if (drafted.length) {
+      opponents.skipped = 'no-slot';
+    }
+
+    // The full pick order, so "who else took whom" survives too. Now attributed
+    // to the seat that actually made each pick rather than only to us.
     if (drafted.length) {
+      const teamByName = order ? new Map(S.getTeams(league.league_key).map((t) => [t.name, t])) : null;
+      const attribute = (i) => {
+        if (mine.includes(drafted[i])) return me.team_key;
+        if (!mySeat || opponents.verified === false || !teamByName) return null;
+        const name = order[seatForPick(i + 1, league.num_teams) - 1];
+        return teamByName.get(name)?.team_key ?? null;
+      };
       run('DELETE FROM draft_picks WHERE league_key = ?', [league.league_key]);
       upsertMany('draft_picks', ['league_key', 'pick', 'round', 'team_key', 'player_id', 'cost'],
         drafted.map((id, i) => ({
           league_key: league.league_key,
           pick: i + 1,
           round: Math.floor(i / Math.max(1, league.num_teams)) + 1,
-          team_key: mine.includes(id) ? me.team_key : null,
+          team_key: attribute(i),
           player_id: id,
           cost: null,
         })), ['league_key', 'pick']);
@@ -448,6 +529,7 @@ export function buildApi() {
       draftPicks: drafted.length,
       team: me.name,
       week,
+      opponents,
     };
   });
 

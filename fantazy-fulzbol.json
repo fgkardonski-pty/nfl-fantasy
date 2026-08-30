@@ -52,6 +52,9 @@
     { "name": "The Ternichian",        "division": "Division 1", "waiverPriority": 16 }
   ],
 
+  "_draftOrder": "Seat order at the draft table, seat 1 first — read off Yahoo's draft results page: the first sixteen picks of round 1 name the sixteen seats in order. This is the ONLY thing connecting a pick to a manager. The pick log tells the app which SEAT made each pick, never who sat there, so without this list the opponents' rosters cannot be rebuilt and the war room, playoff odds and trade views have nothing to work with. Ours is seat 4.",
+  "draftOrder": [],
+
   "_schedule": "Only weeks entered here are treated as the REAL schedule. Anything absent is filled by a division-aware round robin purely so the season simulation has something to run on — it is labelled as estimated in the app and must never be read as Yahoo's actual pairings. Add weeks as you read them off Yahoo; each week is a list of [home, away] name pairs.",
   "schedule": {
     "1": [["Frank the Tank", "Fly Agaric"]]
