@@ -236,7 +236,10 @@ const COMMANDS = {
       }
 
       out(`${c.green}\u2713${c.reset} ${c.bold}${r.name}${c.reset} (${r.league_key})`);
-      out(`  ${r.teams} teams · ${r.rosterSpots} roster spots · ${r.matchups} matchups · week ${r.week}`);
+      out(`  ${r.teams} teams · ${r.rosterSpots} roster spots · ${r.matchups} matchups across ${r.matchupWeeks} weeks · now week ${r.week}`);
+      if (!r.matchupWeeks) {
+        out(`  ${c.yellow}!${c.reset} no schedule published yet — the season simulation will estimate every week.`);
+      }
       if (r.undrafted) {
         out(`  ${c.yellow}This league has not drafted yet${c.reset} — every roster is empty, which is why there`);
         out(`  ${c.grey}are no roster spots or matchups. Re-run this command after the draft.${c.reset}`);
@@ -314,6 +317,72 @@ const COMMANDS = {
     run('UPDATE teams SET is_mine = 1 WHERE league_key = ? AND team_key = ?', [l.league_key, match.team_key]);
     S.invalidateOutlook();
     out(`${c.green}\u2713${c.reset} ${c.bold}${match.name}${c.reset} is now your team in ${l.name}.`);
+  },
+
+  /**
+   * Per-league inventory: what is loaded, what is missing, and the next command
+   * for each gap.
+   *
+   * Exists because "it does not appear to be working" is not answerable from a
+   * screenshot. Each league needs different things — a Sleeper league has no
+   * rosters until it drafts, a hand-entered league has none until its config is
+   * re-imported — and the same empty screen means different things in each.
+   */
+  doctor() {
+    const leagues = S.listLeagues();
+    if (!leagues.length) { out(`${c.yellow}No leagues loaded.${c.reset} Run ${c.cyan}real league --file <f>${c.reset} or ${c.cyan}sleeper league --id <id>${c.reset}`); return; }
+
+    const players = all('SELECT COUNT(*) c FROM players')[0]?.c ?? 0;
+    const linked = all('SELECT COUNT(*) c FROM players WHERE sleeper_id IS NOT NULL')[0]?.c ?? 0;
+    rule(`DOCTOR — ${players} players in the pool (${linked} linked to Sleeper)`);
+    if (!players) out(`  ${c.red}The player pool is empty. Nothing can work. Run ${c.cyan}real seed${c.reset}`);
+
+    for (const meta_ of leagues) {
+      const l = S.getLeague(meta_.league_key);
+      const teams = S.getTeams(l.league_key);
+      const week = l.current_week;
+      const isSleeper = l.league_key.startsWith('sleeper.');
+
+      const rosterRows = all('SELECT team_key, COUNT(*) n FROM rosters WHERE league_key = ? AND week = ? GROUP BY team_key', [l.league_key, week]);
+      const withRoster = rosterRows.length;
+      const spots = rosterRows.reduce((a, r) => a + r.n, 0);
+      const matchups = all('SELECT COUNT(DISTINCT week) w, COUNT(*) n FROM matchups WHERE league_key = ?', [l.league_key])[0] ?? { w: 0, n: 0 };
+      const board = S.adpSourcesFor(l);
+      const mine = teams.find((t) => t.is_mine);
+
+      out(`\n  ${c.bold}${l.name}${c.reset} ${c.grey}${l.league_key} · week ${week}${c.reset}`);
+      const line = (label, ok, text, fix) => {
+        const mark = ok === true ? `${c.green}\u2713${c.reset}` : ok === null ? `${c.yellow}\u25CB${c.reset}` : `${c.red}\u2717${c.reset}`;
+        out(`    ${mark} ${pad(label, 12)}${text}`);
+        if (fix) out(`      ${c.grey}${fix}${c.reset}`);
+      };
+
+      line('teams', teams.length === l.num_teams, `${teams.length} of ${l.num_teams}`,
+        teams.length === l.num_teams ? null : isSleeper ? `node bin/oracle.mjs sleeper league` : `node bin/oracle.mjs real league --file <config>.json`);
+
+      line('my team', !!mine, mine ? `${mine.name}${mine.manager ? ` (${mine.manager})` : ''}` : 'not set',
+        mine ? null : `node bin/oracle.mjs myteam --team "<name>" --league ${l.league_key}`);
+
+      // A Sleeper league with no rosters has not drafted; a hand-entered one
+      // has simply not been re-imported. Same emptiness, different fix.
+      const rosterOk = withRoster === teams.length && teams.length > 0;
+      line('rosters', rosterOk ? true : (withRoster ? null : false),
+        `${withRoster} of ${teams.length} teams · ${spots} players`,
+        rosterOk ? null
+          : isSleeper ? 'the draft has not happened yet — re-run "sleeper league" afterwards'
+            : 'node bin/oracle.mjs real league --file <config>.json   (rosters live in its "rosters" block)');
+
+      line('matchups', matchups.n > 0, matchups.n ? `${matchups.n / 2} across ${matchups.w} week(s)` : 'none',
+        matchups.n ? null
+          : isSleeper ? 're-run "sleeper league" once the season starts'
+            : 'add a "schedule" block to the config; unentered weeks are estimated and labelled');
+
+      line('board', board.exact.length > 0, board.exact.length
+        ? `${board.exact.join(', ')} — matches this league's ${board.code}`
+        : board.order.length ? `${board.order[0]} — NOT published for ${board.code}` : 'none loaded',
+        board.exact.length ? null : `node bin/oracle.mjs real fp-csv --file <rankings>.csv --league ${l.league_key}`);
+    }
+    out(`\n  ${c.grey}Every league is independent. A gap in one says nothing about the other.${c.reset}`);
   },
 
   rules(opts) {
@@ -1087,6 +1156,7 @@ ${c.bold}DRAFT DAY${c.reset}
                           live board with VOR, VONA, tiers and survival probability
 
 ${c.bold}LEAGUES${c.reset}
+  ${c.cyan}doctor${c.reset}                  what each league has loaded, what is missing, and the fix
   ${c.cyan}leagues${c.reset}                 every league loaded, and which is the default
   ${c.cyan}rules${c.reset}                   a league's roster and scoring exactly as imported
   ${c.cyan}sleeper league${c.reset} --id <id> [--user <name>]

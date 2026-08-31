@@ -1025,16 +1025,30 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
     upsertMany('rosters', Object.keys(rosterRows[0]), rosterRows, ['league_key', 'team_key', 'player_id', 'week']);
   }
 
-  // This week's real pairings.
-  const pairs = await sleeper.leagueMatchups(leagueId, currentWeek).catch(() => []);
+  // The WHOLE regular season, not just this week.
+  //
+  // Sleeper fixes the schedule when the league is created, so every week is
+  // available before a single game is played — and the season simulation needs
+  // all of it. Pulling only the current week left thirteen weeks to be filled
+  // in by a round-robin guess while the real pairings sat one request away.
+  const lastWeek = Math.max(1, meta_.playoffStartWeek - 1);
   const matchupRows = [];
-  for (const [a, b] of pairs) {
-    for (const [x, y] of [[a, b], [b, a]]) {
-      matchupRows.push({
-        league_key: leagueKey, week: currentWeek, team_key: keyOf(x.roster_id),
-        opp_team_key: keyOf(y.roster_id), points: x.points || null, projected: null,
-        is_playoffs: currentWeek >= meta_.playoffStartWeek ? 1 : 0, source: 'sleeper',
-      });
+  const weeksFound = [];
+  for (let w = 1; w <= lastWeek; w++) {
+    const pairs = await sleeper.leagueMatchups(leagueId, w).catch(() => []);
+    if (!pairs.length) continue;                 // week not published; stop guessing about it
+    weeksFound.push(w);
+    for (const [a, b] of pairs) {
+      for (const [x, y] of [[a, b], [b, a]]) {
+        matchupRows.push({
+          league_key: leagueKey, week: w, team_key: keyOf(x.roster_id),
+          opp_team_key: keyOf(y.roster_id),
+          // Points are only real for a week that has been played.
+          points: w < currentWeek ? (x.points || null) : null,
+          projected: null,
+          is_playoffs: w >= meta_.playoffStartWeek ? 1 : 0, source: 'sleeper',
+        });
+      }
     }
   }
   if (matchupRows.length) {
@@ -1050,6 +1064,7 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
   return {
     ok: true, league_key: leagueKey, name: meta_.name, season: meta_.season,
     teams: teamRows.length, rosterSpots: rosterRows.length, matchups: matchupRows.length / 2,
+    matchupWeeks: weeksFound.length, lastScheduledWeek: weeksFound.at(-1) ?? null,
     week: currentWeek, unknownPlayers,
     unmappedScoring: unmapped, unmappedSlots: meta_.unmappedSlots,
     // A league whose rosters exist but hold no players has not drafted. That is
