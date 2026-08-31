@@ -101,10 +101,21 @@ export async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   let data = null;
-  try { data = await res.json(); } catch { /* empty body */ }
+  try { data = await res.json(); } catch { /* empty or truncated body */ }
   if (!res.ok) {
     const err = new Error(data?.error ?? `Request failed (${res.status})`);
     err.hint = data?.hint;
+    err.status = res.status;
+    throw err;
+  }
+  // A 200 with nothing parseable in it used to be handed back as null, and
+  // every caller then read a property off it — so a request cut short by a
+  // reload or a server restart surfaced as "Cannot read properties of null"
+  // deep inside a view instead of an error the page could show. Every endpoint
+  // here returns JSON, so an empty success is a failure.
+  if (data == null) {
+    const err = new Error('The server returned an empty response.');
+    err.hint = 'The request was probably interrupted — reload the page. If it persists, check the server log.';
     err.status = res.status;
     throw err;
   }

@@ -542,7 +542,7 @@ export async function render(root) {
   // handlers close over refresh(), which is defined further down. Only shown
   // for a league that actually has a feed — offering a sync button on a Yahoo
   // draft would promise something that does not exist.
-  if (isSleeper) toolbar.append(syncBtn, autoSync, syncNote);
+  if (isSleeper) controls.append(syncBtn, autoSync, syncNote);
 
   autoBox.addEventListener('change', () => {
     clearInterval(syncTimer);
