@@ -109,3 +109,47 @@ test('Sleeper scoring settings map onto this platform\'s keys', () => {
   assert.deepEqual(unmapped, ['some_future_rule']);
   assert.equal(scoring.ignored_zero, undefined, 'a zero-valued rule is not a rule');
 });
+
+test('each league reads the consensus board published for its own scoring', () => {
+  // ADP drives the OPPONENT model — when a player leaves the board, what
+  // survives to the next pick, what VONA is worth. Scoring format changes the
+  // ORDER of a consensus board, not just its scale, so a full-PPR league
+  // reading a half-PPR board predicts the wrong draft. That is the same shape
+  // as the defect that already cost a draft: valuation right, market wrong.
+  upsertMany('adp', ['player_id', 'season', 'source', 'adp'], [
+    { player_id: 'ml1', season: 2026, source: 'fp-PPR', adp: 4 },
+    { player_id: 'ml1', season: 2026, source: 'fp-HALF', adp: 19 },
+    { player_id: 'ml1', season: 2026, source: 'legacy', adp: 99 },
+  ], ['player_id', 'season', 'source']);
+
+  const alpha = S.getLeague('test.l.alpha');   // rec 0.5  -> HALF
+  const beta = S.getLeague('test.l.beta');     // rec 1    -> PPR
+
+  assert.equal(S.adpSourcesFor(alpha).code, 'HALF');
+  assert.equal(S.adpSourcesFor(beta).code, 'PPR');
+  assert.deepEqual(S.adpSourcesFor(alpha).exact, ['fp-HALF']);
+  assert.deepEqual(S.adpSourcesFor(beta).exact, ['fp-PPR']);
+
+  // The same player, two leagues, two different market expectations.
+  assert.equal(S.adpFor(alpha, 'ml1'), 19);
+  assert.equal(S.adpFor(beta, 'ml1'), 4);
+});
+
+test('an untagged board is used but not mistaken for a match', () => {
+  // A board whose format is unknown is better than nothing and worse than a
+  // match, and the difference has to be visible — the failure is silent
+  // otherwise: every name resolves and every rank looks plausible.
+  upsertMany('adp', ['player_id', 'season', 'source', 'adp'],
+    [{ player_id: 'ml2', season: 2026, source: 'legacy', adp: 30 }],
+    ['player_id', 'season', 'source']);
+
+  const league = { ...S.getLeague('test.l.alpha'), scoring: { rec: 0 } };  // STD
+  const src = S.adpSourcesFor(league);
+  assert.equal(src.code, 'STD');
+  assert.deepEqual(src.exact, [], 'no board was published for this format');
+  assert.equal(src.fallback, 'untagged');
+  assert.ok(src.order.includes('legacy'), 'it is still used rather than leaving nothing');
+  // And a tagged board for the WRONG format ranks below an untagged one,
+  // because a known mismatch is worse evidence than an unknown.
+  assert.ok(src.order.indexOf('legacy') < src.order.indexOf('fp-PPR'));
+});

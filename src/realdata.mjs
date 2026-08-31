@@ -385,7 +385,7 @@ export async function importRankingsFromFantasyPros({ season, scoring = 'HALF', 
 
   if (rows.length) {
     upsertMany('adp', ['player_id', 'season', 'source', 'adp', 'adp_sd'],
-      rows.map((r) => ({ player_id: r.player_id, season, source: 'fantasypros', adp: r.adp, adp_sd: null })),
+      rows.map((r) => ({ player_id: r.player_id, season, source: `fp-${String(scoring).toUpperCase()}`, adp: r.adp, adp_sd: null })),
       ['player_id', 'season', 'source']);
   }
   log.info(`FantasyPros rankings: ${rows.length}/${ranked.length} matched`);
@@ -420,7 +420,15 @@ export async function importRankingsFromFantasyPros({ season, scoring = 'HALF', 
  * goes at pick 124 is not a better kicker for going early; he is a worse pick,
  * and only keeping the two numbers separate shows that.
  */
-export function importRankingsFromCsv(text, { season, source = 'fantasypros-csv' } = {}) {
+/**
+ * @param {Object} opts
+ * @param {string} [opts.scoring]  PPR | HALF | STD — the format this board was
+ *   published for. It is part of the source tag because the format changes the
+ *   ORDER of a consensus board, not just its scale, and a league reading the
+ *   wrong one predicts the wrong draft.
+ */
+export function importRankingsFromCsv(text, { season, scoring = null, source = null } = {}) {
+  source = source ?? (scoring ? `fp-${String(scoring).toUpperCase()}` : 'fantasypros-csv');
   const { rows: parsed, skipped } = fpcsv.parseRankingsCsv(text);
   if (!parsed.length) {
     return { matched: 0, total: 0, unmatched: [], note: 'No player rows found in that file.' };

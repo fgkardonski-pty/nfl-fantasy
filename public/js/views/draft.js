@@ -519,6 +519,14 @@ export async function render(root) {
       syncNote.textContent = d.status === 'drafting'
         ? `live · seat ${d.mySeat ?? '?'} · ${d.type}`
         : `${d.status} · seat ${d.mySeat ?? '?'} · ${d.type}`;
+
+      // Turn polling on by itself once the draft is actually live. Leaving it
+      // opt-in means the one night it matters is the night it is easy to forget,
+      // and the cost of forgetting is going back to typing picks under a clock.
+      if (d.status === 'drafting' && !autoBox.checked) {
+        autoBox.checked = true;
+        autoBox.dispatchEvent(new Event('change'));
+      }
       if (changed || !quiet) await refresh();
     } catch (err) {
       syncBtn.textContent = 'sync picks';

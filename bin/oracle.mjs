@@ -18,6 +18,7 @@ import * as yahooClient from '../src/providers/yahoo/client.mjs';
 import { syncLeague } from '../src/providers/yahoo/sync.mjs';
 import { recommendPick, snakePicks, nextContestedPick } from '../src/engine/draft.mjs';
 import { uncoveredScoringRules } from '../src/engine/statline.mjs';
+import { scoringCodeFor } from '../src/providers/fantasypros.mjs';
 import { seedRealPlayers, importRankingsFromCsv, importAdpFromText, setupRealLeague, clearDemoData, demoPlayerCount, importRankingsFromFantasyPros, importProjectionsFromFantasyPros, importWeeklyFromSleeper, probeSleeperWeekly, importScheduleFromSleeper, importSleeperLeague, syncSleeperDraft } from '../src/realdata.mjs';
 import * as fantasypros from '../src/providers/fantasypros.mjs';
 import fs from 'node:fs';
@@ -341,6 +342,25 @@ const COMMANDS = {
     group(/^def_ya_/, 'Defense — yards allowed');
     group(/^def_(?!pa_|ya_)/, 'Defense — other');
     group(/^(ret_|two_pt|fum_|st_)/, 'Misc');
+
+    // Which consensus board the opponent model is reading. A format mismatch is
+    // invisible without this: every name matches, every rank looks plausible,
+    // and the predicted draft is another league's.
+    const src = S.adpSourcesFor(l);
+    out(`\n  ${c.bold}Consensus board${c.reset} (drives the opponent model, not valuation)`);
+    out(`    this league is ${c.bold}${src.code}${c.reset}`);
+    if (src.exact.length) {
+      out(`    ${c.green}using ${src.exact.join(', ')} — published for this format${c.reset}`);
+    } else if (src.fallback === 'untagged') {
+      out(`    ${c.yellow}using ${src.order[0]} — format unknown, so it may be another league's board${c.reset}`);
+      out(`    ${c.grey}Re-import with: ${c.cyan}real fp-csv --file <f> --scoring ${src.code} --league ${l.league_key}${c.reset}`);
+    } else if (src.fallback === 'wrong-format') {
+      out(`    ${c.red}only boards for OTHER formats are loaded (${src.available.join(', ')})${c.reset}`);
+      out(`    ${c.grey}Scoring format changes the ORDER of a board, not just its scale.${c.reset}`);
+      out(`    ${c.cyan}real fp-csv --file <f> --scoring ${src.code} --league ${l.league_key}${c.reset}`);
+    } else {
+      out(`    ${c.red}no consensus board loaded at all — the opponent model has nothing to run on${c.reset}`);
+    }
 
     // The check that matters: a rule the model never feeds scores zero forever.
     const uncovered = uncoveredScoringRules(l.scoring);
@@ -796,8 +816,17 @@ const COMMANDS = {
       const league = S.getLeague(opts.league);
       const season = Number(opts.season ?? league?.season ?? config.season);
       const text = fs.readFileSync(path.resolve(file), 'utf8');
-      const report = importRankingsFromCsv(text, { season });
-      out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} ranked players (season ${season})`);
+      // The scoring format of the board being imported. Defaults to the target
+      // league's own format, because a board is only usable by a league whose
+      // rules it was published for — and getting this wrong is invisible: the
+      // names all match, the ranks all look plausible, and the ORDER is another
+      // league's.
+      const fmt = String(opts.scoring ?? (league ? scoringCodeFor(league.scoring) : 'HALF')).toUpperCase();
+      const report = importRankingsFromCsv(text, { season, scoring: fmt });
+      out(`${c.green}\u2713${c.reset} matched ${report.matched}/${report.total} ranked players (season ${season}, ${c.bold}${fmt}${c.reset})`);
+      if (!opts.scoring && league) {
+        out(`${c.grey}  Format taken from ${league.name}. Pass ${c.cyan}--scoring PPR|HALF|STD${c.reset}${c.grey} to override.${c.reset}`);
+      }
       if (report.byPos) {
         out(`${c.grey}  ${Object.entries(report.byPos).map(([k, v]) => `${k} ${v}`).join('  ')}${c.reset}`);
       }
@@ -1078,7 +1107,7 @@ ${c.bold}DATA${c.reset}
   ${c.cyan}real fp${c.reset}                 import rankings from the FantasyPros API (needs a key)
   ${c.cyan}real fp-proj${c.reset}            import projected stat lines (better than rankings)
   ${c.cyan}real check${c.reset}              which scoring rules the valuation model actually feeds
-  ${c.cyan}real fp-csv --file <f>${c.reset}  import a FantasyPros rankings CSV export (the full board)
+  ${c.cyan}real fp-csv --file <f>${c.reset}  import a FantasyPros rankings CSV (add --scoring PPR|HALF|STD)
   ${c.cyan}real fp-probe${c.reset}           diagnose the FantasyPros endpoint shape
   ${c.cyan}real fp-page${c.reset}            find the undocumented paging parameter
   ${c.cyan}real adp${c.reset} --file f.txt   import real draft rankings from a pasted list

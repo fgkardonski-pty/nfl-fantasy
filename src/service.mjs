@@ -21,6 +21,7 @@ import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachT
 import { rebuildTeamDefense } from './engine/matchup.mjs';
 import { normaliseName } from './providers/sleeper.mjs';
 import { rankStreamers } from './engine/streaming.mjs';
+import { scoringCodeFor } from './providers/fantasypros.mjs';
 import { round, clamp, mean, shrink } from './util/stats.mjs';
 import { logger } from './util/log.mjs';
 
@@ -132,7 +133,7 @@ export function project(league, players, week, { persist = false } = {}) {
     // season number strips the matchup out and is what trades are priced on.
     pr.seasonMean = seasonMean(p, league, week);
     pr.recentDelta = recentDelta(p, league, week);
-    pr.adp = adpOf(p.player_id, league.season);
+    pr.adp = adpOf(p.player_id, league);
     return pr;
   });
   if (persist) persistProjections(league.league_key, league.season, week, out);
@@ -179,9 +180,15 @@ function recentDelta(player, league, week) {
   return clamp((mean(recent) - s) / s, -1, 2);
 }
 
-function adpOf(playerId, season) {
-  const r = get('SELECT adp FROM adp WHERE player_id = ? AND season = ? ORDER BY source LIMIT 1', [playerId, season]);
-  return r ? Number(r.adp) : null;
+/**
+ * ADP for one player, from the board that matches this league's scoring.
+ *
+ * The previous implementation ordered by source name and took the first, which
+ * with several boards loaded meant "whichever source sorts first alphabetically"
+ * — an arbitrary choice presented as a considered one.
+ */
+function adpOf(playerId, league) {
+  return adpFor(league, playerId);
 }
 
 function persistProjections(leagueKey, season, week, projections) {
@@ -221,6 +228,19 @@ export function draftValues(league, players) {
   // Positional rank from ADP: sort each position's ADP-ranked players and use
   // their order within the position. This is what turns a global consensus
   // ranking into "he is the RB7", which is the input the archetype curves need.
+  // The boards this league should read, and every ADP on them, resolved once.
+  // adpFor() re-resolves the source order on every lookup, which is right for a
+  // single player and ruinous across five thousand — the draft board runs this
+  // over the full pool under a clock.
+  const adpSources = adpSourcesFor(league).order;
+  const adpByPlayer = new Map();
+  for (const src of [...adpSources].reverse()) {           // best source last, so it wins
+    for (const r of all('SELECT player_id, adp FROM adp WHERE season = ? AND source = ? AND adp IS NOT NULL', [season, src])) {
+      adpByPlayer.set(r.player_id, Number(r.adp));
+    }
+  }
+  const adpOfLocal = (id) => adpByPlayer.get(id) ?? null;
+
   const posRankOf = new Map();
   const publishedRank = new Set();
   {
@@ -229,16 +249,21 @@ export function draftValues(league, players) {
     // and the market reaches. Kickers are the clearest case — they go dozens of
     // picks before their consensus rank, so an ADP-derived ordering would price
     // the most over-drafted kicker as though he were the best one.
+    // Scoped to the boards this league should read. Mixing a half-PPR board's
+    // positional ranks into a full-PPR league would order the position by
+    // another league's market.
+    const sources = adpSources;
+    const inSources = sources.length ? `AND source IN (${sources.map(() => '?').join(',')})` : '';
     for (const r of all(
-      'SELECT player_id, pos_rank FROM adp WHERE season = ? AND pos_rank IS NOT NULL',
-      [season]
+      `SELECT player_id, pos_rank FROM adp WHERE season = ? AND pos_rank IS NOT NULL ${inSources}`,
+      [season, ...sources]
     )) { posRankOf.set(r.player_id, r.pos_rank); publishedRank.add(r.player_id); }
 
     // Anyone the publisher did not rank still needs an ordering, and ADP within
     // the position is the best available stand-in.
     const withAdp = players
       .filter((p) => !posRankOf.has(p.player_id))
-      .map((p) => ({ id: p.player_id, pos: p.pos, adp: adpOf(p.player_id, season) }))
+      .map((p) => ({ id: p.player_id, pos: p.pos, adp: adpOfLocal(p.player_id) }))
       .filter((x) => x.adp != null)
       .sort((a, b) => a.adp - b.adp);
     // Continue past the published ranks rather than restarting at 1, or an
@@ -267,12 +292,14 @@ export function draftValues(league, players) {
   // nothing is loaded at all.
   const FALLBACK_UNRANKED = { QB: 60, RB: 160, WR: 190, TE: 90, K: 40, DEF: 36 };
   const UNRANKED = { ...FALLBACK_UNRANKED };
+  const depthSources = adpSourcesFor(league).order;
+  const depthIn = depthSources.length ? `AND a.source IN (${depthSources.map(() => '?').join(',')})` : '';
   for (const r of all(
     `SELECT p.pos pos, MAX(a.pos_rank) deepest
        FROM adp a JOIN players p ON p.player_id = a.player_id
-      WHERE a.season = ? AND a.pos_rank IS NOT NULL
+      WHERE a.season = ? AND a.pos_rank IS NOT NULL ${depthIn}
       GROUP BY p.pos`,
-    [season]
+    [season, ...depthSources]
   )) {
     if (Number.isFinite(r.deepest) && r.deepest > 0) {
       UNRANKED[r.pos] = Math.round(r.deepest * 1.2) + 5;
@@ -336,7 +363,7 @@ export function draftValues(league, players) {
     const projStats = projByPlayer.get(p.player_id) ?? null;
     const rows = gamesByPlayer.get(p.player_id) ?? [];
     const prior = priceRank(p.pos, UNRANKED[p.pos] ?? 60);
-    const adp = adpOf(p.player_id, season);
+    const adp = adpOfLocal(p.player_id);
     const projected = projStats != null ? scoreStatLine(j(projStats, {}), league.scoring) : null;
 
     let value;
@@ -1257,3 +1284,57 @@ export function calibrationReport(league, truth, { week = league.current_week } 
 // and was silently dropped from the calibration sample. A measurement that
 // quietly discards the players it cannot name is worse than no measurement.
 const normalise = normaliseName;
+
+// ---------------------------------------------------------------------------
+// Which consensus board a league should read
+// ---------------------------------------------------------------------------
+
+/**
+ * The ADP sources this league should prefer, best first.
+ *
+ * ADP is stored per player per season, with no league dimension — one set of
+ * rows served every league. That is fine for valuation, which applies the
+ * league's own scoring to an archetype, and wrong for the OPPONENT model, which
+ * is the thing ADP actually drives: when a player leaves the board, what
+ * survives to the next pick, what VONA is worth.
+ *
+ * Consensus rankings are published per scoring format, and the format changes
+ * the ORDER, not just the scale — a pass-catching back is a different player in
+ * full PPR than in half. Reading a half-PPR board in a full-PPR league predicts
+ * the wrong draft, which is the same shape as the defect that cost a draft
+ * already: valuation right, opponent model wrong.
+ *
+ * Sources are tagged with their format on import (`fp-PPR`, `fp-HALF`). An
+ * untagged source is used only as a last resort, and named so, because its
+ * format is unknown rather than known-correct.
+ */
+export function adpSourcesFor(league) {
+  const code = scoringCodeFor(league?.scoring ?? {});
+  const available = all('SELECT DISTINCT source FROM adp WHERE season = ?', [league?.season])
+    .map((r) => r.source);
+
+  const exact = available.filter((s) => s.toUpperCase().endsWith(`-${code}`));
+  const otherTagged = available.filter((s) => /-(PPR|HALF|STD)$/i.test(s) && !exact.includes(s));
+  const untagged = available.filter((s) => !/-(PPR|HALF|STD)$/i.test(s));
+
+  return {
+    code,
+    // Preference order, and the reason for it, so a caller can report which
+    // board it actually used rather than implying a match it did not have.
+    order: [...exact, ...untagged, ...otherTagged],
+    exact,
+    fallback: exact.length ? null : (untagged.length ? 'untagged' : (otherTagged.length ? 'wrong-format' : 'none')),
+    available,
+  };
+}
+
+/** A single ADP value for a player, from the best-matching board. */
+export function adpFor(league, playerId) {
+  const { order } = adpSourcesFor(league);
+  for (const source of order) {
+    const r = get('SELECT adp FROM adp WHERE player_id = ? AND season = ? AND source = ?',
+      [playerId, league.season, source]);
+    if (r?.adp != null) return Number(r.adp);
+  }
+  return null;
+}
