@@ -20,7 +20,7 @@ process.env.ORACLE_LOG_LEVEL = 'silent';
 
 const { upsertMany, all, get, closeDb } = await import('../src/db/index.mjs');
 const { projectPlayer } = await import('../src/engine/projections.mjs');
-const LEAGUE = JSON.parse(fs.readFileSync('fantazy-fulzbol.json', 'utf8')).scoring;
+const LEAGUE = JSON.parse(fs.readFileSync('fantazy-fulzbol.settings.json', 'utf8')).scoring;
 
 test.after(() => { closeDb(); fs.rmSync(tmpDir, { recursive: true, force: true }); });
 

@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 
 const { rankStreamers, expectedDefenseWeek, claimRisk } = await import('../src/engine/streaming.mjs');
 const fs = await import('node:fs/promises');
-const SCORING = JSON.parse(await fs.readFile('fantazy-fulzbol.json', 'utf8')).scoring;
+const SCORING = JSON.parse(await fs.readFile('fantazy-fulzbol.settings.json', 'utf8')).scoring;
 
 const unit = { def_sack: 2.6, def_int: 0.8, def_fum_rec: 0.5, def_tfl: 6.0, def_4th_down_stop: 0.5 };
 const defense = (nfl_team, over = {}) => ({

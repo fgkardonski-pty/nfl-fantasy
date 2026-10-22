@@ -99,7 +99,10 @@ test('re-importing replaces a team roster rather than stacking onto it', () => {
   assert.deepEqual(mine.map((x) => x.player_id), ['r4']);
 });
 
-test('the league config carries rosters that name real teams and no duplicates', async () => {
+// The full league file (teams, managers, rosters) is private and not in the
+// repository; this check runs only where it exists.
+const haveLeagueFile = fs.existsSync('fantazy-fulzbol.json');
+test('the league config carries rosters that name real teams and no duplicates', { skip: !haveLeagueFile && 'private league file not present' }, async () => {
   // Guards the transcription itself, not the code: the shipped config is the
   // record of what was read off the screenshots, and both faults it is known to
   // have had — a player on two teams, a name for a team that does not exist —

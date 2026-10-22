@@ -265,7 +265,7 @@ test('the archetype curve matches Yahoo\'s real week 1 projections', async () =>
   // and defenses priced at half their real value. They cancelled in the total,
   // so nothing looked broken until each position was measured on its own.
   const fs = await import('node:fs/promises');
-  const scoring = JSON.parse(await fs.readFile('fantazy-fulzbol.json', 'utf8')).scoring;
+  const scoring = JSON.parse(await fs.readFile('fantazy-fulzbol.settings.json', 'utf8')).scoring;
   const at = (pos, rank) => expectedPointsAtRank(pos, rank, scoring);
 
   // Observed: nine quarterbacks between 35.2 (Stroud) and 42.8 (Burrow).

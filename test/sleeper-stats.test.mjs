@@ -13,7 +13,7 @@ const { mapSleeperStats, mapSleeperUsage, SLEEPER_STAT_MAP } = await import('../
 const { PA_TIERS, YA_TIERS } = await import('../src/engine/statline.mjs');
 const { scoreStatLine } = await import('../src/engine/scoring.mjs');
 const { expectedScore } = await import('../src/engine/statline.mjs');
-const LEAGUE = JSON.parse(await import('node:fs').then((fs) => fs.promises.readFile('fantazy-fulzbol.json', 'utf8'))).scoring;
+const LEAGUE = JSON.parse(await import('node:fs').then((fs) => fs.promises.readFile('fantazy-fulzbol.settings.json', 'utf8'))).scoring;
 
 test('a receiver line maps onto the categories this league actually pays for', () => {
   const raw = { rec: 8, rec_yd: 112, rec_td: 1, rec_fd: 5, rec_tgt: 11, rec_40p: 1, fum_lost: 1 };

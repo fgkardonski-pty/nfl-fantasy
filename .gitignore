@@ -8,3 +8,6 @@ data/cache/
 .env.local
 *.log
 .DS_Store
+
+# Private league data: teams, managers and rosters. Rules live in fantazy-fulzbol.settings.json.
+fantazy-fulzbol.json
