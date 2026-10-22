@@ -3,20 +3,20 @@
  * where every number in this platform came from.
  */
 import {
-  h, frag, api, loading, errorBox, badge, table, ago, n1, empty, stat, $,
+  h, fill, frag, api, loading, errorBox, badge, table, ago, n1, empty, stat, $,
 } from '../util.js';
 
 export async function render(root) {
-  root.replaceChildren(loading('checking connections…'));
+  fill(root, loading('checking connections…'));
   let health; let yahoo; let research; let leagues;
   try {
     [health, yahoo, research, leagues] = await Promise.all([
       api('/api/health'), api('/api/yahoo/status'),
       api('/api/research/status'), api('/api/leagues'),
     ]);
-  } catch (err) { root.replaceChildren(errorBox(err)); return; }
+  } catch (err) { fill(root, errorBox(err)); return; }
 
-  root.replaceChildren(
+  fill(root, 
     h('div.page-head',
       h('div',
         h('h2', 'Data & Connections'),
@@ -120,7 +120,7 @@ async function startManual(btn, out) {
       type: 'text', placeholder: 'paste the whole address bar here…',
       style: { width: '100%', marginTop: '8px' },
     });
-    out.replaceChildren(
+    fill(out, 
       h('div.rec.info', { style: { marginTop: '12px' } },
         h('strong', 'Step 1. '), 'Open this link, approve access, then copy your browser\'s address bar:'),
       h('div.card.tight', h('a', { href: url, target: '_blank', rel: 'noopener',
@@ -132,7 +132,7 @@ async function startManual(btn, out) {
       h('div.xs.mute.mt-s', 'The link is valid for 15 minutes.')
     );
   } catch (err) {
-    out.replaceChildren(errorBox(err));
+    fill(out, errorBox(err));
     btn.disabled = false;
   }
 }
@@ -142,7 +142,7 @@ async function finishManual(btn, input, out) {
   btn.textContent = 'connecting…';
   try {
     const res = await api('/api/yahoo/manual/finish', { method: 'POST', body: { pasted: input.value } });
-    out.replaceChildren(
+    fill(out, 
       h('div.rec', h('strong', 'Connected. '),
         res.leagues.length
           ? `Found ${res.leagues.length} league${res.leagues.length === 1 ? '' : 's'}.`
@@ -161,10 +161,10 @@ async function finishManual(btn, input, out) {
 async function syncNow(btn) {
   btn.disabled = true;
   const out = $('#sync-out');
-  out.replaceChildren(loading('syncing league from Yahoo…'));
+  fill(out, loading('syncing league from Yahoo…'));
   try {
     const report = await api('/api/yahoo/sync', { method: 'POST', body: {} });
-    out.replaceChildren(
+    fill(out, 
       h('div', { class: report.ok ? 'rec' : 'rec warn' },
         report.ok ? `Sync complete in ${report.ms}ms.` : `Partial sync — ${report.errors.length} stage(s) failed.`),
       h('div.card.tight.mt-s', table(['Stage', 'Result'],
@@ -172,7 +172,7 @@ async function syncNow(btn) {
           h('td', name),
           h('td', s.ok ? badge('ok', 'ok') : badge(s.error ?? 'failed', 'bad'))))))
     );
-  } catch (err) { out.replaceChildren(errorBox(err)); }
+  } catch (err) { fill(out, errorBox(err)); }
   btn.disabled = false;
 }
 

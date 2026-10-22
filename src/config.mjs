@@ -66,7 +66,13 @@ export const config = {
   fantasyProsPageParam: env('FANTASYPROS_PAGE_PARAM'),
   fantasyProsPageStyle: env('FANTASYPROS_PAGE_STYLE'),
   anthropicKey: env('ANTHROPIC_API_KEY'),
+  // Required when the API key is not scoped to a single workspace: every
+  // request must then name the workspace it bills to.
+  anthropicWorkspaceId: env('ANTHROPIC_WORKSPACE_ID'),
   llmModel: env('ORACLE_LLM_MODEL', 'claude-sonnet-5'),
+  // The in-app assistant that explains recommendations. Separate from the news
+  // scorer above: one reads a sentence, the other reasons over a whole roster.
+  chatModel: env('ORACLE_CHAT_MODEL', 'claude-opus-5-5'),
 
   sims: {
     week: num('ORACLE_SIMS_WEEK', 20000),

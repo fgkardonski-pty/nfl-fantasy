@@ -20,7 +20,7 @@ import { usageProfile, opportunityScore, ewma, POSITION_PRIORS, shrinkToPrior } 
 import { defenseMultiplier, environmentMultiplier, weatherMultiplier, findGame, weekHasSchedule } from './matchup.mjs';
 import { expectedPointsAtRank, expectedScore } from './statline.mjs';
 
-export const MODEL_VERSION = 'oracle-proj-1.4';
+export const MODEL_VERSION = 'oracle-proj-1.5';
 
 /** Availability multipliers by injury designation. */
 const STATUS_MULT = {
@@ -49,8 +49,14 @@ export function baselinePpg(playerId, pos, season, throughWeek, scoring) {
     `SELECT week, stats FROM player_stats WHERE player_id = ? AND season = ? AND week <= ? ORDER BY week ASC`,
     [playerId, season, throughWeek]
   );
-  const pts = rows.map((r) => scoreStatLine(j(r.stats, {}), scoring));
+  const pts = rows.filter((r) => r.week > 0).map((r) => scoreStatLine(j(r.stats, {}), scoring));
   const games = pts.length;
+
+  const published = externalProjection(playerId, season, throughWeek + 1, scoring);
+  if (published) return {
+    ppg: published.points, games, recent: null, seasonAvg: null, external: published.source,
+    source: `${published.source} projection for week ${throughWeek + 1}`,
+  };
 
   const priorPpg = POSITION_PRIORS[pos]?.ppg ?? 10;
   if (!games) {
@@ -213,6 +219,20 @@ export function projectPlayer(player, ctx) {
   ];
 
   let mean = base.ppg * um.mult * dm.mult * em.mult * wm.mult * nm.mult * st.mult;
+  if (base.external) {
+    // A current weekly forecast already prices role, opponent and weather.
+    // Hard ineligibility still overrides it; arbitrary multiplicative discounts do not.
+    for (const c of components.filter((c) => c.mult != null)) {
+      c.mult = 1;
+      c.note = 'Included in published weekly forecast; no duplicate adjustment';
+    }
+    mean = base.ppg;
+    if (st.mult === 0) {
+      mean = 0;
+      const c = components.find((c) => c.key === 'status');
+      c.mult = 0; c.note = `designated ${st.label}`;
+    }
+  }
 
   if (onBye) {
     mean = 0;

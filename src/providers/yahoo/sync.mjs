@@ -103,7 +103,7 @@ export async function syncSettings(leagueKey) {
     synced_at: Date.now(),
   };
   upsertMany('leagues', Object.keys(row), [row], ['league_key']);
-  meta.set('active_league', leagueKey);
+  if (!meta.get('active_league')) meta.set('active_league', leagueKey);
   log.info(`settings: ${row.name} (${row.num_teams} teams, week ${row.current_week})`);
   return { currentWeek: row.current_week, season: row.season, slots: rosterSlots.length, scoringKeys: Object.keys(scoring).length };
 }

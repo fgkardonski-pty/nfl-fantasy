@@ -2,7 +2,8 @@
  * War room shell: hash routing, league context, and the sidebar status block.
  * No framework, no build step — the whole client is ES modules served as-is.
  */
-import { h, api, $, $$, badge, errorBox, loading, ago, pct, setLeague, getLeague } from './util.js';
+import './chat.js';
+import { h, fill, api, $, $$, badge, errorBox, loading, ago, pct, setLeague, getLeague } from './util.js';
 
 const VIEWS = {
   warroom: () => import('./views/warroom.js'),
@@ -14,6 +15,7 @@ const VIEWS = {
   players: () => import('./views/players.js'),
   draft: () => import('./views/draft.js'),
   data: () => import('./views/data.js'),
+  update: () => import('./views/update.js'),
 };
 
 const main = $('#main');
@@ -38,7 +40,7 @@ async function boot() {
       renderFirstRun(err);
       return;
     }
-    main.replaceChildren(errorBox(err));
+    fill(main, errorBox(err));
     return;
   }
   renderFoot();
@@ -73,7 +75,7 @@ function leaguePicker() {
 
 function renderFirstRun(err) {
   $('#foot').replaceChildren(h('div.mute.xs', 'no league loaded'));
-  main.replaceChildren(
+  fill(main, 
     h('div.page-head', h('div',
       h('h2', 'Welcome to the war room'),
       h('div.sub', 'Nothing is loaded yet. Two ways to start:'))),
@@ -104,7 +106,7 @@ async function route() {
 
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.view === name));
 
-  main.replaceChildren(loading());
+  fill(main, loading());
   try {
     const mod = await loader();
     const wrap = h('div');
@@ -114,12 +116,12 @@ async function route() {
         h('span', h('strong', 'Demo league. '),
           'Players are fictional and statistics are simulated. Connect Yahoo on the Data page to run this against your real league.')));
     }
-    main.replaceChildren(wrap);
+    fill(main, wrap);
     const viewRoot = h('div');
     wrap.appendChild(viewRoot);
     await mod.render(viewRoot, ctx);
   } catch (err) {
-    main.replaceChildren(errorBox(err));
+    fill(main, errorBox(err));
     console.error(err);
   }
 }
@@ -127,7 +129,7 @@ async function route() {
 async function renderFoot() {
   const l = ctx.league;
   const foot = $('#foot');
-  foot.replaceChildren(
+  fill(foot, 
     leaguePicker(),
     h('div.row', h('span', l.name)),
     h('div.row', h('span.mute', 'week'), h('span.mono', l.current_week)),

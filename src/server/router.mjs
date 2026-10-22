@@ -43,7 +43,8 @@ export class Router {
     const query = Object.fromEntries(url.searchParams);
     let body = null;
     if (req.method === 'POST') {
-      body = await readJsonBody(req);
+      // Screenshot uploads carry several base64 images; everything else is small.
+      body = await readJsonBody(req, url.pathname.startsWith('/api/import/') ? 40_000_000 : 1_000_000);
     }
 
     const ctx = { req, res, url, query, params: found.params, body };
@@ -86,12 +87,12 @@ export function html(res, status, markup) {
   res.end(markup);
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, limit = 1_000_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 1_000_000) throw httpError(413, 'Request body too large');
+    if (size > limit) throw httpError(413, 'Request body too large');
     chunks.push(chunk);
   }
   if (!chunks.length) return null;

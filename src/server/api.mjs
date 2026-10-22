@@ -23,6 +23,9 @@ import { optimalLineup, lineupMarginals } from '../engine/optimizer.mjs';
 import { positionalNeed } from '../engine/opponent.mjs';
 import { syncSleeperDraft } from '../realdata.mjs';
 import { logger } from '../util/log.mjs';
+import { actionPlan } from '../actions.mjs';
+import * as chat from '../chat.mjs';
+import * as screenshots from '../screenshots.mjs';
 
 const log = logger('api');
 
@@ -89,6 +92,51 @@ export function buildApi() {
   });
 
   // ---- The war room -------------------------------------------------------
+
+  r.get('/api/actions', ({ query }) => ({ ...actionPlan(requireLeague(query)), automaticRefresh: daemon.status().running }));
+
+  r.get('/api/chat/status', () => ({ enabled: chat.isEnabled() }));
+
+  // Update a hand-entered league from screenshots: read and propose, then
+  // apply only what the manager ticked.
+  r.get('/api/import/status', ({ query }) => {
+    const league = requireLeague(query);
+    return { available: Boolean(screenshots.configPathFor(league.league_key)), readerEnabled: chat.isEnabled(), week: league.current_week };
+  });
+  r.post('/api/import/screenshots', async ({ query, body }) => {
+    const league = requireLeague(query);
+    const extracted = await screenshots.extract(body?.images ?? []);
+    return screenshots.propose(league.league_key, extracted);
+  });
+  r.post('/api/import/apply', ({ query, body }) => {
+    const league = requireLeague(query);
+    return screenshots.apply(league.league_key, { changes: body?.changes ?? [], currentWeek: body?.currentWeek ?? null });
+  });
+
+  /**
+   * Ask the assistant about a recommendation. Streams newline-delimited JSON so
+   * the answer appears as it is written rather than after a long silence.
+   */
+  r.post('/api/chat', async ({ query, body, res }) => {
+    const league = requireLeague(query);
+    if (!chat.isEnabled()) {
+      throw httpError(503, 'The assistant needs an Anthropic API key.', 'Set ANTHROPIC_API_KEY in .env and restart the server.');
+    }
+    if (!body?.message || typeof body.message !== 'string') throw httpError(400, 'Ask a question.');
+    res.writeHead(200, {
+      'content-type': 'application/x-ndjson; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    const emit = (e) => { if (!res.writableEnded) res.write(JSON.stringify(e) + '\n'); };
+    try {
+      await chat.ask(league, { conversationId: body.conversationId ?? null, message: body.message }, emit);
+    } catch (err) {
+      logger('chat').warn(`chat failed: ${err.message}`);
+      emit({ type: 'error', message: chat.describeError(err) });
+    }
+    res.end();
+  });
 
   r.get('/api/warroom', ({ query }) => {
     const league = requireLeague(query);
@@ -554,7 +602,7 @@ export function buildApi() {
       throw httpError(400, 'Live sync is only available for Sleeper leagues.',
         'A Yahoo draft has no public feed, so picks are marked by hand in the board.');
     }
-    const r_ = await syncSleeperDraft(id, { username: meta.get('sleeper_username') });
+    const r_ = await syncSleeperDraft(id, { username: meta.get(`sleeper_username:${league.league_key}`) ?? meta.get('sleeper_username') });
     if (!r_.ok) throw httpError(502, r_.note);
     return r_;
   });

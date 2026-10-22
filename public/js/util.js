@@ -35,6 +35,17 @@ function append(el, kids) {
 
 export const frag = (...kids) => { const f = document.createDocumentFragment(); append(f, kids); return f; };
 
+/**
+ * Replace an element's children, skipping absent ones. The DOM's own
+ * replaceChildren stringifies null, which printed a literal "null" wherever a
+ * view passed an optional section that was not there.
+ */
+export function fill(el, ...kids) {
+  el.replaceChildren();
+  append(el, kids);
+  return el;
+}
+
 // ---- Formatting -----------------------------------------------------------
 
 export const pct = (x, d = 1) => (x == null || Number.isNaN(x) ? '—' : `${(x * 100).toFixed(d)}%`);
@@ -190,6 +201,42 @@ export function rangeBar(floor, mean, ceiling, scaleMax) {
     h('div.fill', { style: { left: `${l}%`, width: `${Math.max(w, 1)}%` } }),
     h('div.mark', { style: { left: `${m}%` } })
   );
+}
+
+/** "vs MIA", "@ NYJ" or "BYE" — how a game reads on a Yahoo roster. */
+export function gameLabel(opponent, isHome) {
+  if (opponent === 'BYE') return 'BYE';
+  if (!opponent) return '';
+  return `${isHome ? 'vs' : '@'} ${opponent}`;
+}
+
+/**
+ * What the manager has already done this week, ticked off by hand.
+ *
+ * The app cannot see Yahoo, so it cannot know a claim was submitted. Without
+ * this, a recommendation already acted on looks exactly like one still pending.
+ * Kept per league and week in this browser only.
+ */
+export function doneList(week) {
+  const key = `oracle.done.${getLeague()}.${week}`;
+  let set;
+  try { set = new Set(JSON.parse(localStorage.getItem(key) ?? '[]')); } catch { set = new Set(); }
+  const save = () => { try { localStorage.setItem(key, JSON.stringify([...set])); } catch { /* private mode */ } };
+  return {
+    has: (id) => set.has(id),
+    toggle: (id, on) => { if (on) set.add(id); else set.delete(id); save(); },
+  };
+}
+
+/** A to-do row: a checkbox that greys the item out once it is done. */
+export function todo(done, id, ...content) {
+  const row = h('label.todo', { class: done.has(id) ? 'done' : '' },
+    h('input', { type: 'checkbox', checked: done.has(id) || null, onchange: (e) => {
+      done.toggle(id, e.target.checked);
+      row.classList.toggle('done', e.target.checked);
+    } }),
+    h('div.todo-body', ...content));
+  return row;
 }
 
 /** A click-to-expand explanation block. */

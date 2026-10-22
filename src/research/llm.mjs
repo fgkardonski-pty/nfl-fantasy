@@ -67,6 +67,7 @@ export async function scoreNews(items) {
       'x-api-key': config.anthropicKey,
       'anthropic-version': '2023-06-01',
       'content-type': 'application/json',
+      ...(config.anthropicWorkspaceId ? { 'anthropic-workspace-id': config.anthropicWorkspaceId } : {}),
     },
     body: JSON.stringify({
       model: config.llmModel,

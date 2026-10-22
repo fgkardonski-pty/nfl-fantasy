@@ -100,7 +100,7 @@ export async function enrichPlayers() {
       player_id: local.player_id,
       sleeper_id: hit.sleeper_id,
       // Yahoo's designation is authoritative when present; Sleeper fills gaps.
-      status: local.status || hit.status,
+      status: hit.status,
       injury_note: hit.injury_note,
       age: hit.age,
       years_exp: hit.years_exp,
@@ -465,6 +465,7 @@ export async function leagueRosters(leagueId) {
     owner_id: r.owner_id ? String(r.owner_id) : null,
     players: (r.players ?? []).map(String),
     starters: (r.starters ?? []).map(String),
+    reserve: (r.reserve ?? []).map(String),
     wins: Number(r.settings?.wins ?? 0),
     losses: Number(r.settings?.losses ?? 0),
     ties: Number(r.settings?.ties ?? 0),
@@ -473,6 +474,15 @@ export async function leagueRosters(leagueId) {
     waiverPosition: r.settings?.waiver_position ?? null,
     faabUsed: r.settings?.waiver_budget_used ?? null,
   })) : [];
+}
+
+/** A failed activity request must not look like a quiet league. */
+export async function leagueTransactions(leagueId, week) {
+  const r = await request(`${BASE}/league/${encodeURIComponent(leagueId)}/transactions/${week}`, {
+    source: 'sleeper', cache: true, maxAgeMs: 300000, json: true,
+  });
+  if (!r.ok || !Array.isArray(r.json)) throw new Error(`Sleeper activity unavailable for week ${week}`);
+  return r.json.filter((t) => t.status === 'complete');
 }
 
 /** One week's matchups. Sleeper pairs rosters by a shared matchup_id. */

@@ -99,8 +99,12 @@ export function optimizeForWinProbability(roster, slots, oppLineup, {
   });
 
   scored.sort((a, b) => b.winProb - a.winProb);
-  const best = scored[0];
-  const pointOptimal = scored.find((c) => c.id === 'optimal') ?? best;
+  const apparentBest = scored[0];
+  const pointOptimal = scored.find((c) => c.id === 'optimal') ?? apparentBest;
+  // Different simulations have sampling error. Require a conservative
+  // family-wise threshold before overriding the points-optimal lineup.
+  const noiseThreshold = 3.5 * Math.sqrt(0.5 / sims);
+  const best = apparentBest.winProb - pointOptimal.winProb > noiseThreshold ? apparentBest : pointOptimal;
 
   const disagreement = best.id !== 'optimal';
   const winProbGain = best.winProb - pointOptimal.winProb;
@@ -113,6 +117,7 @@ export function optimizeForWinProbability(roster, slots, oppLineup, {
     disagreement,
     winProbGain,
     pointsGiven,
+    noiseThreshold,
     posture: posture(pointOptimal.winProb),
     explanation: explain({ disagreement, best, pointOptimal, winProbGain, pointsGiven }),
     stacks: describeStacks(best.starters),
@@ -145,7 +150,7 @@ export function posture(winProb) {
 function explain({ disagreement, best, pointOptimal, winProbGain, pointsGiven }) {
   const p = posture(pointOptimal.winProb);
   if (!disagreement) {
-    return `The projection-optimal lineup is also the win-probability-optimal lineup at ${(best.winProb * 100).toFixed(1)}%. ${p.advice}`;
+    return `Keep the projection-optimal lineup (${(best.winProb * 100).toFixed(1)}% estimated win probability). No tested alternative provides a clear gain beyond simulation noise.`;
   }
   const article = /^[aeiou]/i.test(p.stance) ? 'an' : 'a';
   // Below ~0.3 points the difference is inside Monte Carlo noise; claiming a

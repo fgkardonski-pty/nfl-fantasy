@@ -3,7 +3,7 @@
  * you advance pick by pick.
  */
 import {
-  h, frag, api, loading, errorBox, pct, n1, n2, posEl, badge, table, empty, statusBadge,
+  h, fill, frag, api, loading, errorBox, pct, n1, n2, posEl, badge, table, empty, statusBadge,
 } from '../util.js';
 
 /**
@@ -133,9 +133,9 @@ export async function render(root) {
   const lastAction = h('div.mb', { hidden: true });
 
   function showLastAction(entry) {
-    if (!entry) { lastAction.hidden = true; lastAction.replaceChildren(); return; }
+    if (!entry) { lastAction.hidden = true; fill(lastAction, ); return; }
     lastAction.hidden = false;
-    lastAction.replaceChildren(
+    fill(lastAction, 
       h('div.card.tight',
         h('div.row-flex',
           h('span.xs.mute', 'LAST MARK'),
@@ -296,11 +296,11 @@ export async function render(root) {
   function renderMatches() {
     if (!matches.length) {
       searchResults.hidden = true;
-      searchResults.replaceChildren();
+      fill(searchResults, );
       return;
     }
     searchResults.hidden = false;
-    searchResults.replaceChildren(
+    fill(searchResults, 
       h('div.card.tight.mb',
         h('div.xs', { class: fuzzy ? 'warnc' : 'mute', style: { marginBottom: '6px' } },
           fuzzy
@@ -403,7 +403,7 @@ export async function render(root) {
       state.pick += 1;
       hit.push(found.n);
     }
-    pasteReport.replaceChildren(
+    fill(pasteReport, 
       h('div', `Marked ${hit.length}${asMine ? ' as your picks' : ' as taken'}.`),
       // Corrections are shown so they can be eyeballed and undone, never
       // applied silently.
@@ -458,7 +458,7 @@ export async function render(root) {
 
   const body = h('div', loading('simulating the draft forward…'));
 
-  root.replaceChildren(
+  fill(root, 
     h('div.page-head',
       h('div',
         h('h2', 'Draft Room'),
@@ -587,7 +587,7 @@ export async function render(root) {
     // reads as a delay even when the new one arrives in a fifth of a second,
     // and during a draft the old board is still the best answer available
     // until the new one lands.
-    if (!painted) body.replaceChildren(loading('simulating the draft forward…'));
+    if (!painted) fill(body, loading('simulating the draft forward…'));
     else body.style.opacity = '0.55';
 
     try {
@@ -600,11 +600,11 @@ export async function render(root) {
       if (state.pos && state.pos !== 'ALL') params.set('pos', state.pos);
       const d = await api(`/api/draft/board?${params}`);
       if (seq !== refreshSeq) return;            // superseded — a newer mark is in flight
-      body.replaceChildren(board(d, numTeams, refresh));
+      fill(body, board(d, numTeams, refresh));
       painted = true;
     } catch (err) {
       if (seq !== refreshSeq) return;
-      body.replaceChildren(errorBox(err));
+      fill(body, errorBox(err));
     } finally {
       if (seq === refreshSeq) body.style.opacity = '';
     }

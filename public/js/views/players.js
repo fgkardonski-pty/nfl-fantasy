@@ -1,6 +1,6 @@
 /** The player universe: search, filter, VOR, tiers, ownership. */
 import {
-  h, api, loading, errorBox, pct, n1, n2, posEl, statusBadge, badge, table, empty, why, $,
+  h, fill, api, loading, errorBox, pct, n1, n2, posEl, statusBadge, badge, table, empty, why, $,
 } from '../util.js';
 import { componentBreakdown } from './warroom.js';
 
@@ -28,7 +28,7 @@ export async function render(root) {
 
   const body = h('div', loading('valuing the player pool…'));
 
-  root.replaceChildren(
+  fill(root, 
     h('div.page-head',
       h('div',
         h('h2', 'Players'),
@@ -40,15 +40,15 @@ export async function render(root) {
   );
 
   async function refresh() {
-    body.replaceChildren(loading('valuing the player pool…'));
+    fill(body, loading('valuing the player pool…'));
     try {
       const params = new URLSearchParams({ limit: '150' });
       if (state.pos) params.set('pos', state.pos);
       if (state.q) params.set('q', state.q);
       if (state.available) params.set('available', '1');
       const d = await api(`/api/players?${params}`);
-      body.replaceChildren(list(d));
-    } catch (err) { body.replaceChildren(errorBox(err)); }
+      fill(body, list(d));
+    } catch (err) { fill(body, errorBox(err)); }
   }
   refresh();
 }

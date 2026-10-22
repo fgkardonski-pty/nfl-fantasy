@@ -38,8 +38,10 @@ export function serveStatic(req, res, pathname) {
     'content-type': TYPES[ext] ?? 'application/octet-stream',
     'content-length': stat.size,
     etag,
-    // The UI is developed live; do not let a browser pin a stale bundle.
-    'cache-control': ext === '.html' ? 'no-cache' : 'public, max-age=60',
+    // The UI is developed live; do not let a browser pin a stale bundle. Every
+    // file revalidates against its etag — a 304 from localhost costs nothing,
+    // and a 60-second grace period was long enough to hide a new page.
+    'cache-control': 'no-cache',
   });
   fs.createReadStream(full).pipe(res);
   return true;

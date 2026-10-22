@@ -107,13 +107,13 @@ test('the war room produces a legal, complete lineup and a win probability', () 
   assert.ok(wr.sim.myFloor <= wr.sim.myMean && wr.sim.myMean <= wr.sim.myCeiling);
 });
 
-test('the recommended lineup is never worse in win probability than the alternatives', () => {
+test('the recommended lineup ignores differences inside simulation noise', () => {
   const wr = S.warRoom(league, { sims: 4000 });
   const best = wr.decision.candidates[0];
   for (const c of wr.decision.candidates) {
     assert.ok(best.winProb >= c.winProb - 1e-9, 'candidates are ranked by win probability');
   }
-  assert.equal(wr.decision.recommended.id, best.id);
+  assert.ok(best.winProb - wr.decision.recommended.winProb <= 3.5 * Math.sqrt(0.5 / 4000));
 });
 
 test('season outlook probabilities are coherent', () => {

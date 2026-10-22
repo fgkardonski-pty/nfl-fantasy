@@ -17,8 +17,16 @@ import { connectionStatus } from '../providers/yahoo/oauth.mjs';
 import * as llm from './llm.mjs';
 import { getLeague, activeLeagueKey, refreshDefensiveRatings, invalidateOutlook, intel } from '../service.mjs';
 import { logger } from '../util/log.mjs';
+import { refreshLeagues } from './refresh.mjs';
 
 const log = logger('research');
+
+async function eachLiveWeek(fn) {
+  const weeks = all('SELECT DISTINCT season, current_week FROM leagues WHERE is_demo=0');
+  const results = [];
+  for (const l of weeks) results.push(await fn({ season: l.season, week: l.current_week }));
+  return { results };
+}
 
 /** Run a job with timing, error isolation and a job_runs record. */
 async function runJob(name, fn) {
@@ -36,28 +44,29 @@ async function runJob(name, fn) {
 }
 
 export const JOBS = {
+  'leagues:refresh': () => runJob('leagues:refresh', async () => {
+    const result = await refreshLeagues();
+    if (!result.ok) throw new Error('One or more league feeds failed; see each league’s War Room data status.');
+    return result;
+  }),
   /** Refresh injury designations, depth chart order and player metadata. */
   'players:enrich': () => runJob('players:enrich', () => sleeper.enrichPlayers()),
 
   /** Pull the betting market and derive implied team totals. */
   'market:lines': () => runJob('market:lines', async () => {
-    const league = getLeague();
-    if (!league) return { skipped: 'no active league' };
-    return odds.fetchLines({ season: league.season, week: league.current_week });
+    return eachLiveWeek((ctx) => odds.fetchLines(ctx));
   }),
 
   /** Forecast at kickoff for every outdoor stadium. */
   'market:weather': () => runJob('market:weather', async () => {
-    const league = getLeague();
-    if (!league) return { skipped: 'no active league' };
-    return weather.fetchWeather({ season: league.season, week: league.current_week });
+    return eachLiveWeek((ctx) => weather.fetchWeather(ctx));
   }),
 
   /** What the wider fantasy market is adding — a leading indicator of waiver competition. */
   'market:trending': () => runJob('market:trending', async () => {
     const [adds, drops] = await Promise.all([sleeper.trendingAdds({ limit: 60 }), sleeper.trendingDrops({ limit: 40 })]);
-    const league = getLeague();
-    if (!league || !adds.length) return { adds: adds.length, drops: drops.length, applied: 0 };
+    const leagues = all('SELECT league_key FROM leagues WHERE is_demo=0');
+    if (!leagues.length || !adds.length) return { adds: adds.length, drops: drops.length, applied: 0 };
 
     const bySleeper = new Map(
       all('SELECT player_id, sleeper_id FROM players WHERE sleeper_id IS NOT NULL')
@@ -65,7 +74,7 @@ export const JOBS = {
     );
     const maxAdd = Math.max(1, ...adds.map((a) => a.count));
     const rows = [];
-    for (const a of adds) {
+    for (const league of leagues) for (const a of adds) {
       const local = bySleeper.get(a.sleeper_id);
       if (!local) continue;
       const existing = get('SELECT * FROM ownership WHERE league_key = ? AND player_id = ?', [league.league_key, local]);
@@ -89,6 +98,7 @@ export const JOBS = {
     if (!status.connected) return { skipped: 'Yahoo not connected' };
     const key = activeLeagueKey();
     if (!key) return { skipped: 'no active league' };
+    if (!/^\d+\.l\.\d+$/.test(key)) return { skipped: 'Selected league is not an authenticated Yahoo league' };
     const report = await yahooSync.syncLeague(key, { includeHistory: false });
     invalidateOutlook();
     return { ok: report.ok, partial: report.partial, errors: report.errors };

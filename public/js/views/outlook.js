@@ -1,14 +1,14 @@
 /** Season odds: playoff and championship probability for every team. */
-import { h, api, loading, errorBox, pct, n1, badge, table, bar, stat } from '../util.js';
+import { h, fill, api, loading, errorBox, pct, n1, badge, table, bar, stat } from '../util.js';
 
 export async function render(root) {
-  root.replaceChildren(loading('replaying the season thousands of times…'));
+  fill(root, loading('replaying the season thousands of times…'));
   let d;
   try { d = await api('/api/outlook'); }
-  catch (err) { root.replaceChildren(errorBox(err)); return; }
+  catch (err) { fill(root, errorBox(err)); return; }
 
   if (d.ready === false) {
-    return root.replaceChildren(
+    return fill(root, 
       h('div.page-head', h('div',
         h('h2', 'Season Outlook'),
         h('div.sub', 'No simulation run'))),
@@ -22,7 +22,7 @@ export async function render(root) {
 
   const mine = d.standings.find((s) => s.is_mine);
 
-  root.replaceChildren(
+  fill(root, 
     h('div.page-head',
       h('div',
         h('h2', 'Season Outlook'),

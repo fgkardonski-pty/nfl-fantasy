@@ -15,7 +15,7 @@ import { simulateMatchup, simulateSeason, teamWeekDistribution, roundRobinSchedu
 import { optimizeForWinProbability, posture } from './engine/leverage.mjs';
 import { computeVor, replacementLevels, tierize, tierSummary } from './engine/vor.mjs';
 import { expectedPointsAtRank, archetypeStatLine, expectedScore } from './engine/statline.mjs';
-import { rankWaiverTargets, breakoutScan, worstDroppable } from './engine/waivers.mjs';
+import { rankWaiverTargets, breakoutScan, worstDroppable, hasOpenSpot } from './engine/waivers.mjs';
 import { scanLeague, evaluateOffer } from './engine/trades.mjs';
 import { buildProfile, buildAllProfiles, assignArchetypes, predictClaims, poachTargets, positionalNeed } from './engine/opponent.mjs';
 import { rebuildTeamDefense } from './engine/matchup.mjs';
@@ -95,18 +95,37 @@ export function rosterOf(leagueKey, teamKey, week) {
   );
 }
 
+/**
+ * Unrostered players worth evaluating.
+ *
+ * Ordering by ownership alone failed every league without Yahoo ownership data:
+ * every row tied at zero, so the "pool" was the first rows of the player table
+ * — a coach with no team and quarterbacks retired for years, which the source
+ * still lists on their old clubs. A free agent now has to be on an NFL team and
+ * carry this season's evidence (a weekly forecast, a consensus rank or a played
+ * stat line), and the best-forecast players come first.
+ */
 export function freeAgentPool(leagueKey, week, { limit = 260 } = {}) {
+  const season = get('SELECT season FROM leagues WHERE league_key = ?', [leagueKey])?.season ?? null;
+  // Rostered by a rival we cannot name (a lost waiver claim): not available.
+  const taken = new Set(j(meta.get(`claimed_elsewhere:${leagueKey}`), []));
   return all(
     `SELECT p.*, o.pct_owned, o.pct_started, o.pct_change, o.waiver_status
      FROM players p
      LEFT JOIN ownership o ON o.player_id = p.player_id AND o.league_key = ?
-     WHERE p.player_id NOT IN (
-       SELECT player_id FROM rosters WHERE league_key = ? AND week = ?
-     )
-     ORDER BY COALESCE(o.pct_owned, 0) DESC
+     LEFT JOIN (SELECT player_id, COUNT(*) n FROM external_projections
+                WHERE season = ? AND week = ? GROUP BY player_id) f ON f.player_id = p.player_id
+     LEFT JOIN (SELECT player_id, MIN(adp) adp FROM adp WHERE season = ? GROUP BY player_id) a ON a.player_id = p.player_id
+     WHERE p.nfl_team IS NOT NULL AND p.nfl_team != ''
+       AND p.player_id NOT IN (
+         SELECT player_id FROM rosters WHERE league_key = ? AND week = ?
+       )
+       AND (f.n IS NOT NULL OR a.adp IS NOT NULL OR p.pos = 'DEF'
+            OR EXISTS (SELECT 1 FROM player_stats s WHERE s.player_id = p.player_id AND s.season = ? AND s.week > 0))
+     ORDER BY COALESCE(o.pct_owned, 0) DESC, (f.n IS NULL), COALESCE(a.adp, 9999)
      LIMIT ?`,
-    [leagueKey, leagueKey, week, limit]
-  );
+    [leagueKey, season, week, season, leagueKey, week, season, limit + taken.size]
+  ).filter((p) => !taken.has(p.player_id)).slice(0, limit);
 }
 
 // ---------------------------------------------------------------------------
@@ -123,15 +142,19 @@ const cacheKey = (leagueKey, week, ids) => `${leagueKey}|${week}|${ids.length}|$
  */
 export function project(league, players, week, { persist = false } = {}) {
   const ctx = { season: league.season, week, scoring: league.scoring };
+  const ros = new Map(draftValues(league, players).map((p) => [p.player_id, p.seasonMean]));
   const out = players.map((p) => {
     const pr = projectPlayer(p, ctx);
     pr.pctOwned = p.pct_owned ?? null;
     pr.pctChange = p.pct_change ?? null;
     pr.bye_week = p.bye_week;
+    // The roster slot travels with the projection so an IR stash is never
+    // mistaken for a bench spot that could be cut to make room.
+    pr.slot = p.slot ?? null;
     pr.profile = projProfile(pr);
     // Rest-of-season mean: this week's projection is matchup-specific; the
     // season number strips the matchup out and is what trades are priced on.
-    pr.seasonMean = seasonMean(p, league, week);
+    pr.seasonMean = ros.get(p.player_id) ?? pr.mean;
     pr.recentDelta = recentDelta(p, league, week);
     pr.adp = adpOf(p.player_id, league);
     return pr;
@@ -374,9 +397,13 @@ export function draftValues(league, players) {
       const observed = pts.reduce((a, x, i) => a + x * w[i], 0) / w.reduce((a, b) => a + b, 0);
       // A real projection is a far better prior than either ADP or a positional
       // archetype, so it takes precedence when one exists.
+      // With neither, the anchor is the unranked prior — never the observed
+      // games themselves, which made shrinkage a no-op: one good week from a
+      // backup tight end became his season value, and he was recommended over
+      // starters on the strength of it.
       const anchor = projected != null
         ? projected
-        : (adp != null ? (observed + adpCurve(p.pos, adp, p.player_id)) / 2 : observed);
+        : (adp != null ? (observed + adpCurve(p.pos, adp, p.player_id)) / 2 : prior);
       // Shrink observed play toward that prior by sample size, not toward
       // replacement level.
       value = shrink(observed, anchor, rows.length, shrinkK[p.pos] ?? 4);
@@ -639,13 +666,25 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
   }
   const oppProj = project(league, oppRoster, week);
   const oppBest = optimalLineup(oppProj, league.slots, (p) => p.mean);
-  const oppStarters = oppBest.lineup.map((l) => l.player).filter(Boolean);
+  // Plan against the opponent's BEST lineup, not the one they happen to have
+  // set on Tuesday: managers fix their lineups before kickoff, and a plan that
+  // counts on a rival leaving a kicker on IR is a plan built on luck. (The
+  // league platform scores the lineup as set, which is why its number can run
+  // well above this one early in the week.) The as-set case is still reported,
+  // as the upside if they never fix it.
+  const oppLineup = oppBest.lineup;
+  const oppStarters = oppLineup.map((l) => l.player).filter(Boolean);
+  const setStarters = oppProj.filter((p) => p.slot && !['BN', 'IR', 'IR+', 'NA'].includes(p.slot));
+  const setKnown = setStarters.length === league.slots.length;
 
   const decision = optimizeForWinProbability(myProj, league.slots, oppStarters, {
     sims: Math.min(sims, 15000), seed: config.seed,
   });
 
   const sim = simulateMatchup(decision.recommended.starters, oppStarters, { sims, seed: config.seed + 1 });
+  const asSet = setKnown && oppBest.total - setStarters.reduce((a, p) => a + p.mean, 0) > 0.5
+    ? simulateMatchup(decision.recommended.starters, setStarters, { sims: Math.min(sims, 10000), seed: config.seed + 2 })
+    : null;
 
   // Trim the response before it crosses the wire. Every candidate lineup
   // carries a full copy of its starters' projections, including the component
@@ -710,7 +749,15 @@ export function warRoom(league, { week = league.current_week, sims = config.sims
     },
     roster: myProj.sort((a, b) => b.mean - a.mean),
     oppRoster: oppProj.sort((a, b) => b.mean - a.mean),
-    oppLineup: oppBest.lineup,
+    oppLineup,
+    oppLineupBasis: 'optimal',
+    // The upside if they never fix their lineup, and the players they are
+    // currently leaving out of it.
+    ifOpponentKeepsLineup: asSet ? {
+      winProb: asSet.winProb,
+      oppMean: round(asSet.oppMean, 1),
+      benched: oppStarters.filter((p) => !setStarters.some((s) => s.player_id === p.player_id)).map((p) => p.name),
+    } : null,
   };
 }
 
@@ -780,7 +827,10 @@ export function waiverBoard(league, { week = league.current_week, limit = 25 } =
     faabRemaining: me.faab_remaining ?? 100,
     weeksRemaining,
     playoffOdds: mine?.playoffOdds ?? null,
-    drop: worstDroppable(myRoster, league.rosterSlots),
+    openSpot: hasOpenSpot(myRoster, league.rosterSlots),
+    drop: hasOpenSpot(myRoster, league.rosterSlots) ? null : worstDroppable(myRoster, league.rosterSlots),
+    waiverType: /faab/i.test(league.waiver_type ?? '') ? 'FAAB' : 'priority',
+    waiverPriority: me.waiver_priority ?? null,
     targets,
     breakouts,
   };
@@ -851,6 +901,10 @@ export function intel(league, { week = league.current_week } = {}) {
   // of them can be labelled.
   const profiles = buildAllProfiles(league.league_key, { season: league.season, currentWeek: week, scoring: league.scoring });
   const profileByTeam = new Map(profiles.map((p) => [p.team_key, p]));
+  // Behaviour is read from the transaction log. With no log — a league entered
+  // by hand — every manager scores zero on every trait, which the buy-low model
+  // read as "disengaged owner" and priced as a discount on every roster.
+  const hasActivity = !!get('SELECT 1 FROM transactions WHERE league_key = ? LIMIT 1', [league.league_key]);
 
   const dossiers = teams.map((t) => {
     const prof = profileByTeam.get(t.team_key);
@@ -866,8 +920,14 @@ export function intel(league, { week = league.current_week } = {}) {
     return {
       ...prof,
       claims,
-      poach: t.is_mine ? [] : poachTargets(league.league_key, t.team_key, prof, rosterProj, { limit: 4 }),
+      poach: t.is_mine || !hasActivity ? [] : poachTargets(league.league_key, t.team_key, prof, rosterProj, { limit: 4 }),
       rosterSize: rosterProj.length,
+      // Plain answers to "how good is this team": its best lineup this week and
+      // over a typical week, the same numbers the odds page simulates from.
+      weekProj: round(optimalLineup(rosterProj, league.slots, (p) => p.mean).total, 1),
+      seasonProj: round(optimalLineup(rosterProj, league.slots, (p) => p.seasonMean ?? p.mean).total, 1),
+      starPlayers: rosterProj.filter((p) => !['K', 'DEF'].includes(p.pos)).sort((a, b) => (b.seasonMean ?? 0) - (a.seasonMean ?? 0)).slice(0, 3)
+        .map((p) => ({ name: p.name, pos: p.pos })),
       strength: round(rosterProj.reduce((a, p) => a + (p.seasonMean ?? 0), 0), 1),
     };
   }).filter(Boolean);
@@ -891,7 +951,8 @@ export function intel(league, { week = league.current_week } = {}) {
 
   return {
     week,
-    dossiers: dossiers.sort((a, b) => (b.is_mine ? 1 : 0) - (a.is_mine ? 1 : 0) || b.strength - a.strength),
+    hasActivity,
+    dossiers: dossiers.sort((a, b) => (b.is_mine ? 1 : 0) - (a.is_mine ? 1 : 0) || b.seasonProj - a.seasonProj),
     contention: [...contention.values()]
       .map((c) => ({ ...c, totalPressure: c.rivals.reduce((a, r) => a + r.probability, 0) }))
       .sort((a, b) => b.totalPressure - a.totalPressure)
@@ -1061,10 +1122,12 @@ export function streamDefenses(league, { week = league.current_week, limit = 10 
   }
 
   const ranked = [...byTeam.values()].sort((a, b) => (a.adp ?? 1e9) - (b.adp ?? 1e9));
-  const rosteredIds = new Set(
-    all('SELECT player_id FROM rosters WHERE league_key = ? AND week = ?', [league.league_key, week])
-      .map((r) => r.player_id)
-  );
+  const rosteredIds = new Set([
+    ...all('SELECT player_id FROM rosters WHERE league_key = ? AND week = ?', [league.league_key, week])
+      .map((r) => r.player_id),
+    // On a rival roster we cannot name — still not available to us.
+    ...j(meta.get(`claimed_elsewhere:${league.league_key}`), []),
+  ]);
 
   const me = myTeam(league.league_key);
   const myDef = me

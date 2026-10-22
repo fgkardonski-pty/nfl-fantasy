@@ -38,11 +38,26 @@ export function marginalLineupValue(myRoster, candidate, rosterSlots, { dropCand
   };
 }
 
+const IR_SLOTS = new Set(['IR', 'IR+', 'NA']);
+
+/**
+ * Whether the roster has an empty active spot, so an add needs no drop.
+ * Only knowable when every player carries a saved slot.
+ */
+export function hasOpenSpot(myRoster, rosterSlots) {
+  if (!myRoster.length || myRoster.some((p) => !p.slot)) return false;
+  const active = (rosterSlots ?? []).filter((s) => !IR_SLOTS.has(s.slot))
+    .reduce((a, s) => a + (s.count ?? 1), 0);
+  return myRoster.filter((p) => !IR_SLOTS.has(p.slot)).length < active;
+}
+
 /** The player on my roster I would least mind losing. */
 export function worstDroppable(myRoster, rosterSlots, { protect = new Set() } = {}) {
   const base = optimalLineup(myRoster, rosterSlots, (p) => p.mean);
   const startingIds = new Set(base.lineup.filter((l) => l.player).map((l) => l.player.player_id));
-  const droppable = myRoster.filter((p) => !startingIds.has(p.player_id) && !protect.has(p.player_id));
+  // An IR stash does not occupy a bench spot, so cutting it frees nothing.
+  const droppable = myRoster.filter((p) => !startingIds.has(p.player_id) && !protect.has(p.player_id)
+    && !IR_SLOTS.has(p.slot));
   if (!droppable.length) return null;
   // Rank by what the roster loses without them across the season, not this week
   // alone: a bye-week starter is not droppable just because he scores 0 today.
@@ -62,7 +77,7 @@ export function rankWaiverTargets({
   freeAgents, myRoster, rosterSlots, rivalProfiles = [], leagueKey, season, week,
   faabRemaining = 100, weeksRemaining = 10, playoffOdds = 0.5, limit = 25,
 }) {
-  const drop = worstDroppable(myRoster, rosterSlots);
+  const drop = hasOpenSpot(myRoster, rosterSlots) ? null : worstDroppable(myRoster, rosterSlots);
   const ranked = freeAgents.map((fa) => {
     const mv = marginalLineupValue(myRoster, fa, rosterSlots, { dropCandidate: drop });
 

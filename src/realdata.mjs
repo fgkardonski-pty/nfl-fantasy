@@ -90,20 +90,21 @@ export async function seedRealPlayers() {
       'https://api.sleeper.app/v1/players/nfl should be reachable with no login or key.'
     );
   }
+  const existing = new Map(all('SELECT * FROM players WHERE sleeper_id IS NOT NULL').map((p) => [String(p.sleeper_id), p]));
   const rows = index.map((p) => ({
-    player_id: pid(p.sleeper_id),
+    player_id: existing.get(p.sleeper_id)?.player_id ?? pid(p.sleeper_id),
     name: p.name,
     pos: p.pos,
     nfl_team: p.nfl_team,
-    bye_week: null,
+    bye_week: existing.get(p.sleeper_id)?.bye_week ?? null,
     status: p.status || '',
     injury_note: p.injury_note,
     age: p.age,
     years_exp: p.years_exp,
     depth_rank: p.depth_rank,
-    yahoo_key: null,
+    yahoo_key: existing.get(p.sleeper_id)?.yahoo_key ?? null,
     sleeper_id: p.sleeper_id,
-    headshot: null,
+    headshot: existing.get(p.sleeper_id)?.headshot ?? null,
     updated_at: Date.now(),
   }));
   upsertMany('players', Object.keys(rows[0]), rows, ['player_id']);
@@ -237,7 +238,9 @@ export function setupRealLeague(cfg) {
     playoff_start_week: cfg.playoffStartWeek ?? 15,
     end_week: cfg.endWeek ?? 17,
     num_playoff_teams: cfg.numPlayoffTeams ?? 6,
-    current_week: 1,
+    // The week the transcribed rosters belong to. Rosters are read for exactly
+    // this week, so a mid-season transcription left at week 1 would be invisible.
+    current_week: cfg.currentWeek ?? 1,
     is_demo: 0,
     synced_at: Date.now(),
   };
@@ -306,7 +309,7 @@ export function setupRealLeague(cfg) {
       is_mine: t.name === myName ? 1 : 0,
       faab_remaining: cfg.faabBudget ?? 100,
       waiver_priority: t.waiverPriority ?? null,
-      wins: 0, losses: 0, ties: 0, points_for: 0, points_against: 0,
+      wins: t.wins ?? 0, losses: t.losses ?? 0, ties: t.ties ?? 0, points_for: 0, points_against: 0,
       moves: 0, trade_count: 0, logo: null,
       division: t.division ?? divisionOf.get(t.name) ?? null,
     };
@@ -359,8 +362,21 @@ export function setupRealLeague(cfg) {
   // they reference already exist.
   let rosterReport = null;
   if (cfg.rosters && Object.keys(cfg.rosters).length) {
-    rosterReport = importRostersByName(leagueKey, cfg.rosters, { week: 1 });
+    rosterReport = importRostersByName(leagueKey, cfg.rosters, { week: league.current_week });
   }
+
+  // Players known to be on SOME rival roster without knowing whose — a lost
+  // waiver claim says only "another manager got him". Left in the free-agent
+  // pool, the app kept recommending the very claim that had just failed.
+  const taken = [];
+  for (const e of cfg.claimedElsewhere ?? []) {
+    const row = e.pos === 'DEF' && e.nfl
+      ? get("SELECT player_id FROM players WHERE pos = 'DEF' AND UPPER(nfl_team) = UPPER(?)", [e.nfl])
+      : all('SELECT player_id, name FROM players WHERE pos = ?', [e.pos]).find((p) => normaliseName(p.name) === normaliseName(e.name));
+    if (row) taken.push(row.player_id);
+    else log.warn(`claimedElsewhere: no player found for ${e.name} (${e.pos})`);
+  }
+  meta.set(`claimed_elsewhere:${leagueKey}`, JSON.stringify(taken));
 
   meta.set('active_league', leagueKey);
   log.info(`real league configured: ${league.name} — ${teamRows.length} teams, ${matchupRows.length / 2} known matchups`);
@@ -811,7 +827,7 @@ export function importRostersByName(leagueKey, rostersByTeam, { week = 1 } = {})
       const slot = p.slot && p.slot !== 'BN' ? p.slot : 'BN';
       rows.push({
         league_key: leagueKey, team_key: team.team_key, player_id: p.player_id,
-        week, slot, is_starter: slot === 'BN' ? 0 : 1, acquired: 'draft',
+        week, slot, is_starter: slot === 'BN' || slot === 'IR' ? 0 : 1, acquired: 'draft',
       });
     }
     written[teamName] = players.length;
@@ -929,9 +945,15 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
   if (!rosters.length) return { ok: false, note: `League ${leagueId} has no rosters yet — it may not have drafted.` };
 
   const leagueKey = `sleeper.l.${meta_.league_id}`;
+  if (!users.length || rosters.length !== meta_.numTeams) {
+    return { ok: false, note: 'Incomplete Sleeper league response; saved rosters preserved.' };
+  }
+  const linked = new Set(all('SELECT sleeper_id FROM players WHERE sleeper_id IS NOT NULL').map((p) => String(p.sleeper_id)));
+  const missingIds = [...new Set(rosters.flatMap((r) => r.players).filter((id) => !linked.has(id)))];
+  if (missingIds.length) return { ok: false, unknownPlayers: missingIds.length, note: 'Refresh the player index before syncing: unknown roster players; saved rosters preserved.' };
   const { scoring, unmapped } = scoringFromSleeper(meta_.scoringSettings);
   const state = await sleeper.nflState().catch(() => null);
-  const currentWeek = week ?? state?.week ?? 1;
+  const currentWeek = Math.max(1, Number(week ?? (state?.season === meta_.season ? state.week : null) ?? get('SELECT current_week FROM leagues WHERE league_key = ?', [leagueKey])?.current_week ?? 1));
 
   const userById = new Map(users.map((u) => [u.user_id, u]));
   // Roster id is Sleeper's stable identifier; the display name is not, so teams
@@ -979,7 +1001,7 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
   const teamRows = teams.map((t) => ({
     league_key: leagueKey, team_key: keyOf(t.rosterId), team_id: t.rosterId,
     name: t.name, manager: t.manager, is_mine: 0,
-    faab_remaining: meta_.faabBudget, waiver_priority: t.waiverPriority,
+    faab_remaining: Math.max(0, meta_.faabBudget - (rosters.find((r) => r.roster_id === t.rosterId)?.faabUsed ?? 0)), waiver_priority: t.waiverPriority,
     wins: t.wins, losses: t.losses, ties: t.ties,
     points_for: t.pointsFor, points_against: t.pointsAgainst,
     moves: 0, trade_count: 0, logo: null, division: null,
@@ -987,7 +1009,7 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
   // Which roster is ours. Resolved from the Sleeper username rather than
   // guessed from a team name, because display names are not unique and a wrong
   // guess points the entire war room at somebody else's roster.
-  let mine = null;
+  let mine = get('SELECT team_key FROM teams WHERE league_key = ? AND is_mine = 1', [leagueKey])?.team_key ?? null;
   if (username) {
     const u = await sleeper.user(username).catch(() => null);
     if (u) {
@@ -1010,13 +1032,18 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
   let unknownPlayers = 0;
   for (const r of rosters) {
     const starters = new Set(r.starters.filter((id) => id && id !== '0'));
+    // Sleeper's injured reserve arrives as its own list. Read as bench, an IR
+    // stash looked like a spot a drop would free — and the app recommended
+    // cutting him to make room, which the league then refused.
+    const reserve = new Set(r.reserve ?? []);
+    const startSlots = meta_.rosterSlots.flatMap((s) => Array(s.count).fill(s.slot)).filter((s) => !['BN', 'IR'].includes(s));
     run('DELETE FROM rosters WHERE league_key = ? AND team_key = ? AND week = ?', [leagueKey, keyOf(r.roster_id), currentWeek]);
     for (const sid of r.players) {
       const pid_ = bySleeper.get(sid);
       if (!pid_) { unknownPlayers++; continue; }
       rosterRows.push({
         league_key: leagueKey, team_key: keyOf(r.roster_id), player_id: pid_,
-        week: currentWeek, slot: starters.has(sid) ? 'ST' : 'BN',
+        week: currentWeek, slot: starters.has(sid) ? (startSlots[r.starters.indexOf(sid)] ?? 'ST') : reserve.has(sid) ? 'IR' : 'BN',
         is_starter: starters.has(sid) ? 1 : 0, acquired: 'sleeper',
       });
     }
@@ -1059,6 +1086,9 @@ export async function importSleeperLeague(leagueId, { week = null, username = nu
   // the username used to identify our roster does not have to be retyped.
   meta.set('sleeper_league_id', String(meta_.league_id));
   if (username) meta.set('sleeper_username', String(username));
+  if (username) meta.set(`sleeper_username:${leagueKey}`, String(username));
+  meta.set(`league_status:${leagueKey}`, meta_.status ?? 'unknown');
+  meta.set(`scoring_unmapped:${leagueKey}`, JSON.stringify(unmapped));
 
   log.info(`sleeper league ${meta_.name}: ${teamRows.length} teams, ${rosterRows.length} roster spots, ${matchupRows.length / 2} matchups`);
   return {
@@ -1125,6 +1155,7 @@ export async function syncSleeperDraft(leagueId, { username = null, draftId = nu
   }
 
   const picks = await sleeper.draftPicks(id);
+  if (picks == null) return { ok: false, note: 'Draft picks could not be refreshed; saved board preserved.' };
   const bySleeper = new Map(
     all('SELECT player_id, sleeper_id FROM players WHERE sleeper_id IS NOT NULL')
       .map((p) => [String(p.sleeper_id), p.player_id])

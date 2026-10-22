@@ -19,7 +19,7 @@ const HOUR = 60 * MINUTE;
 
 /** job -> interval. Jitter is applied so jobs do not all fire together. */
 export const SCHEDULE = [
-  { job: 'yahoo:sync',       everyMs: 30 * MINUTE, description: 'league state, rosters, transactions' },
+  { job: 'leagues:refresh',  everyMs: 30 * MINUTE, description: 'all leagues: rosters, activity, weekly evidence' },
   { job: 'players:enrich',   everyMs: 6 * HOUR,    description: 'injury designations and depth charts' },
   { job: 'market:lines',     everyMs: 3 * HOUR,    description: 'Vegas totals and spreads' },
   { job: 'market:weather',   everyMs: 6 * HOUR,    description: 'stadium forecasts at kickoff' },
@@ -36,6 +36,7 @@ export class ResearchDaemon {
     this.timers = [];
     this.running = false;
     this.history = [];
+    this.inFlight = new Map();
   }
 
   start() {
@@ -50,7 +51,7 @@ export class ResearchDaemon {
         const res = await this.runOne(entry.job);
         this.record(res);
       };
-      if (this.runOnStart) setTimeout(kick, jitter);
+      if (this.runOnStart) this.timers.push(setTimeout(kick, jitter));
       const timer = setInterval(kick, entry.everyMs);
       timer.unref?.();
       this.timers.push(timer);
@@ -65,9 +66,12 @@ export class ResearchDaemon {
   }
 
   async runOne(job) {
+    if (this.inFlight.has(job)) return this.inFlight.get(job);
     const fn = JOBS[job];
     if (!fn) return { job, ok: false, error: 'unknown job' };
-    try { return await fn(); } catch (err) { return { job, ok: false, error: err.message }; }
+    const pending = Promise.resolve().then(fn).catch((err) => ({ job, ok: false, error: err.message }));
+    this.inFlight.set(job, pending);
+    try { return await pending; } finally { this.inFlight.delete(job); }
   }
 
   record(result) {
@@ -88,4 +92,4 @@ export class ResearchDaemon {
   }
 }
 
-export const daemon = new ResearchDaemon({ runOnStart: false });
+export const daemon = new ResearchDaemon({ runOnStart: true });

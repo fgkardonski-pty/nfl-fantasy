@@ -70,7 +70,7 @@ const COMMANDS = {
     else out(`  ${c.yellow}no league loaded — run: node bin/oracle.mjs demo${c.reset}`);
     const y = oauth.connectionStatus();
     out(`  ${c.grey}yahoo:${c.reset} ${y.connected ? c.green + 'connected' : y.configured ? c.yellow + 'configured, not connected' : c.grey + 'not configured'}${c.reset}`);
-    if (opts.research) { daemon.start(); out(`  ${c.grey}research daemon:${c.reset} ${c.green}running${c.reset}`); }
+    if (!opts['no-research']) { daemon.start(); out(`  ${c.grey}research daemon:${c.reset} ${c.green}running automatically${c.reset}`); }
     out('');
     const shutdown = () => { daemon.stop(); server.close(); closeDb(); process.exit(0); };
     process.on('SIGINT', shutdown);
@@ -1010,6 +1010,8 @@ const COMMANDS = {
       }
       const cfg = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8'));
       const r = setupRealLeague(cfg);
+      // Remembered so the app can update this file itself from screenshots.
+      meta.set(`league_config:${r.league_key}`, path.resolve(file));
       out(`${c.green}\u2713${c.reset} league configured: ${c.bold}${cfg.name}${c.reset} (${r.league_key})`);
       out(`  ${r.teams} teams${cfg.divisions?.length ? ` across ${cfg.divisions.length} divisions` : ''}, ${r.matchups} real matchup${r.matchups === 1 ? '' : 's'} entered`);
       if (!r.matchups) {
@@ -1138,7 +1140,7 @@ ${c.bold}USAGE${c.reset}
 
 ${c.bold}GETTING STARTED${c.reset}
   ${c.cyan}demo${c.reset}                    seed a synthetic league so every engine is usable immediately
-  ${c.cyan}serve${c.reset} [--research]      start the war room web UI (default http://127.0.0.1:${config.port})
+  ${c.cyan}serve${c.reset} [--no-research]   start the war room with automatic research (default http://127.0.0.1:${config.port})
   ${c.cyan}status${c.reset}                  what is loaded, what is connected, what is stale
 
 ${c.bold}EVERY WEEK${c.reset}

@@ -1,5 +1,5 @@
 /**
- * Defense streamer.
+ * Defense — the weekly swap question.
  *
  * The cheapest edge in this league. Defenses score far more here than in a
  * standard one — two points a sack, sixteen for a shutout, a point per tackle
@@ -12,80 +12,96 @@
  * to win: at waiver priority 13 of 16, twelve managers pick over the pile
  * before we do, so the useful answer is the best defense we can actually get.
  */
-import { h, frag, api, loading, errorBox, badge, table, empty, n1, pct } from '../util.js';
+import { h, fill, frag, api, loading, errorBox, badge, table, empty, n1, pct, gameLabel, doneList, todo } from '../util.js';
+import { whyLink } from '../chat.js';
+
+/** A swap has to clear this many projected points to be worth the claim. */
+const WORTH_IT = 1.5;
 
 export async function render(root) {
-  root.replaceChildren(loading('pricing every defense against this week’s slate…'));
-  let d;
-  try { d = await api('/api/stream?limit=14'); }
-  catch (err) { root.replaceChildren(errorBox(err)); return; }
+  fill(root, loading('pricing every defense against this week’s slate…'));
+  let d, plan;
+  try { [d, plan] = await Promise.all([api('/api/stream?limit=14'), api('/api/actions').catch(() => null)]); }
+  catch (err) { fill(root, errorBox(err)); return; }
 
-  if (!d.ok) return root.replaceChildren(refusal(d));
+  if (!d.ok) return fill(root, refusal(d));
 
-  const rows = d.best.map((x) => {
-    const odds = 1 - (x.claimRisk ?? 0);
-    return [
-      h('span.strong', x.name),
-      `${x.home ? 'vs' : '@'} ${x.opponent}`,
-      // The implied total of the offence faced is the whole signal; showing it
-      // means a manager can sanity-check the ranking rather than trust it.
-      h('span', { class: x.impliedOpponentTotal < 19 ? 'okc' : x.impliedOpponentTotal > 25 ? 'badc' : '' },
-        n1(x.impliedOpponentTotal)),
-      h('span.strong', n1(x.mean)),
-      x.expectedGain == null ? '—'
-        : h('span', { class: x.expectedGain > 1.5 ? 'okc' : x.expectedGain > 0 ? '' : 'mute' },
-            `${x.expectedGain > 0 ? '+' : ''}${n1(x.expectedGain)}`),
-      h('span', { class: odds > 0.8 ? 'okc' : odds > 0.6 ? 'warnc' : 'badc' }, pct(odds, 0)),
-    ];
-  });
-
-  root.replaceChildren(
+  const upgrades = d.best.filter((x) => (x.expectedGain ?? 0) > WORTH_IT);
+  fill(root,
     h('div.page-head',
       h('div',
-        h('h2', `Defense streamer — week ${d.week ?? ''}`),
-        h('div.sub', d.mine
-          ? `Holding ${d.mine.name} (${d.mine.home ? 'vs' : '@'} ${d.mine.opponent}, projected ${n1(d.mine.mean)}). Anything below has to beat that to be worth a claim.`
-          : 'No defense is on the roster, so every candidate below is an upgrade on nothing.')),
-      h('div.row-flex',
-        d.waiverPriority != null
-          ? badge(`WAIVER PRIORITY ${d.waiverPriority}`, d.waiverPriority > 8 ? 'warn' : 'ok')
-          : null)),
+        h('h2', 'Defense'),
+        h('div.sub', `Should you swap your defense for week ${d.week ?? ''}? Defenses score big in this league and change hands for free, so the right one is worth checking every week.`))),
 
-    d.recommended ? verdictCard(d) : standPat(d),
+    answer(d, upgrades, plan),
 
     h('div.section-head',
-      h('h3', 'Every available defense, best matchup first'),
-      h('span.note', 'IMP is the points the offence they face is implied to score — the number the ranking turns on')),
-    table(
-      ['Defense', 'Matchup', { label: 'IMP', num: true }, { label: 'Proj', num: true },
-       { label: 'Gain', num: true }, { label: 'Claim odds', num: true }],
-      rows),
-
-    d.contested?.length
-      ? h('div.note.mt', `Likely claimed before our turn: ${d.contested.map((x) => x.name).join(', ')}.`)
-      : null,
+      h('h3', 'Every available defense'),
+      h('span.note', 'best projection first')),
+    h('div.card.tight', table(
+      ['Defense', 'Game', { label: 'Projected', num: true }, { label: 'vs yours', num: true }, 'If on waivers'],
+      [
+        d.mine ? h('tr.mine',
+          h('td', h('b', d.mine.name), ' ', badge('YOURS', 'ok')),
+          h('td.pmeta', gameLabel(d.mine.opponent, d.mine.home)),
+          h('td.num', n1(d.mine.mean)),
+          h('td.num.mute', '—'),
+          h('td.small.mute', '')) : null,
+        ...d.best.map((x) => {
+          const odds = 1 - (x.claimRisk ?? 0);
+          const gain = x.expectedGain;
+          return h('tr',
+            h('td', x.name),
+            h('td.pmeta', gameLabel(x.opponent, x.home)),
+            h('td.num', n1(x.mean)),
+            h('td.num', { class: gain > WORTH_IT ? 'good' : 'mute' }, gain == null ? '—' : `${gain > 0 ? '+' : ''}${n1(gain)}`),
+            h('td.small', { class: odds > 0.8 ? 'good' : odds > 0.5 ? 'warnc' : 'bad' },
+              odds > 0.8 ? 'you’d likely get him' : odds > 0.5 ? `${pct(odds, 0)} chance` : `unlikely (${pct(odds, 0)})`));
+        }),
+      ])),
+    h('div.xs.mute.mt-s', 'The last column only matters if Yahoo marks the defense “W” (on waivers). A defense marked “FA” is yours the moment you add it.'),
   );
 }
 
-function verdictCard(d) {
-  const r = d.recommended;
-  return h('div.card.accent',
-    h('div.row-flex',
-      badge('CLAIM', 'ok'),
-      h('h3', r.name),
-      h('span.mute', `${r.home ? 'vs' : '@'} ${r.opponent}`)),
-    h('p', d.mine
-      ? `Projected ${n1(r.mean)} against ${n1(d.mine.mean)} for ${d.mine.name} — ${n1(r.expectedGain)} points of upgrade for a claim that costs nothing but priority.`
-      : `Projected ${n1(r.mean)}, against an offence implied for only ${n1(r.impliedOpponentTotal)} points.`),
-    h('p.mute.xs', `From waiver priority ${d.waiverPriority ?? '?'} this claim lands roughly ${pct(1 - r.claimRisk, 0)} of the time.`));
-}
-
-function standPat(d) {
-  return h('div.card',
-    h('div.row-flex', badge('STAND PAT', 'dim'), h('h3', 'No claim worth making')),
-    h('p', d.mine
-      ? `Nothing available beats ${d.mine.name} by enough to spend a waiver claim on. Streaming is only free when the upgrade is real.`
-      : 'No defense on this week’s slate is realistically claimable from our position in the waiver order.'));
+/**
+ * The answer, as an instruction: which defense to add, which to drop, and what
+ * to try if the first choice is gone. A bare "CLAIM Miami" left the drop and
+ * the start unsaid.
+ */
+function answer(d, upgrades, plan) {
+  const mine = d.mine;
+  // The weekly plan decides what is dropped, because it sees the whole roster:
+  // with an open spot the right move keeps the current defense on the bench.
+  const planned = plan?.acquisitions?.find((a) => a.addPos === 'DEF');
+  const drop = planned ? planned.drop : mine;
+  if (!upgrades.length) {
+    return h('div.card',
+      h('div.todo-title', badge('KEEP', 'ok'), ` Keep ${mine ? mine.name : 'your defense'}`),
+      h('p.small.dim', mine
+        ? `Nothing available projects enough above ${mine.name} (${n1(mine.mean)} ${gameLabel(mine.opponent, mine.home)}) to be worth the move.`
+        : 'No available defense is worth adding this week.'));
+  }
+  const done = doneList(d.week);
+  const first = (planned && upgrades.find((x) => x.player_id === planned.add.player_id)) ?? upgrades[0];
+  const rest = upgrades.filter((x) => x !== first);
+  const fallback = rest.filter((x) => (x.claimRisk ?? 0) < 0.5).slice(0, 2);
+  return h('div.card.accent.todos',
+    todo(done, `add:${first.player_id}`,
+      h('div.todo-title',
+        h('span.verb.add', 'ADD'), ' ', h('b', first.name), h('span.mute', ` ${gameLabel(first.opponent, first.home)}`),
+        drop ? frag(h('span.verb.drop', 'DROP'), ' ', h('b', drop.name))
+          : frag(h('span.verb.sit', 'NO DROP'), ' ', h('span.mute', 'uses your open roster spot')),
+        h('span.gain', `+${n1(first.expectedGain)} pts this week`),
+        whyLink(`Why should I pick up the ${first.name} defense${drop ? ` and drop ${drop.name}` : ''} this week?`)),
+      h('div.small.dim',
+        `Projected ${n1(first.mean)}${mine ? ` against ${n1(mine.mean)} for ${mine.name} (${gameLabel(mine.opponent, mine.home)})` : ''}. `,
+        mine && !drop ? `Start him at DEF and move ${mine.name} to your bench — they’re the better defense for the rest of the season.` : 'Start him at DEF once he’s on your roster.'),
+      fallback.length && (first.claimRisk ?? 0) >= 0.5
+        ? h('div.small.warnc', `If he’s on waivers, someone ahead of you will probably claim him first. Claim him anyway, and put in a backup claim for ${fallback.map((x) => `${x.name} (+${n1(x.expectedGain)})`).join(', then ')}.`)
+        : null),
+    drop && mine && drop.player_id === mine.player_id
+      ? h('div.xs.mute.mt-s', `Dropping ${mine.name} is fine: defenses are streamed week to week, and you can pick one up again when its matchup is good.`)
+      : null);
 }
 
 /**

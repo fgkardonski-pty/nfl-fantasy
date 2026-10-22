@@ -1,5 +1,11 @@
 # 🏈 Gridiron Oracle
 
+The War Room now opens with separate add/drop/hold and next-lineup decisions,
+plus recent league activity. `serve` starts automatic research for registered
+Yahoo and Sleeper leagues; use `serve --no-research` for offline operation.
+See [War Room delivery and activation](WAR_ROOM_DELIVERY.md) for refresh cadences,
+provider requirements and remaining modeling limitations.
+
 **A self-hosted war room built for one purpose: winning your Yahoo fantasy football league.**
 
 Not a projection site. Not a rankings aggregator. A decision engine that reads your

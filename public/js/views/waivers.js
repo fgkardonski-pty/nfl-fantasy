@@ -1,140 +1,134 @@
 /**
- * Waivers. Ranked by championship-probability added, priced in FAAB dollars,
- * with the competition you are bidding against named.
+ * Pickups — who to add, and who to drop for them.
+ *
+ * Two parts, deliberately in this order. First the plan: the same sequence of
+ * moves the This Week page lists, because two screens recommending different
+ * pickups is worse than either alone. Then the board: everyone available,
+ * filterable by position, with one plain number per player — how much he adds
+ * to YOUR lineup — rather than a wall of model outputs.
  */
 import {
-  h, frag, api, loading, errorBox, stat, pct, n1, n2, money, posEl,
-  statusBadge, badge, table, empty, bar, why,
+  h, fill, frag, api, loading, errorBox, pct, n1, money, posEl,
+  statusBadge, badge, table, empty, why, gameLabel, doneList, todo,
 } from '../util.js';
+import { whyLink } from '../chat.js';
 import { componentBreakdown } from './warroom.js';
 
-/** How many targets get a full card before the rest collapse into a table. */
-const FEATURED = 6;
-
-const VERDICT = {
-  priority: { cls: 'ok', label: 'PRIORITY' },
-  speculative: { cls: 'purple', label: 'BUY THE ROLE' },
-  add: { cls: 'info', label: 'ADD' },
-  stream: { cls: 'warn', label: 'STREAM' },
-  pass: { cls: 'dim', label: 'PASS' },
-};
+const POSITIONS = ['ALL', 'QB', 'RB', 'WR', 'TE', 'K', 'DEF'];
 
 export async function render(root) {
-  root.replaceChildren(loading('valuing the free-agent pool…'));
-  let d;
-  try { d = await api('/api/waivers?limit=30'); }
-  catch (err) { root.replaceChildren(errorBox(err)); return; }
+  fill(root, loading('valuing every available player for your roster…'));
+  let plan, board;
+  try {
+    [plan, board] = await Promise.all([api('/api/actions'), api('/api/waivers?limit=80')]);
+  } catch (err) { fill(root, errorBox(err)); return; }
 
-  root.replaceChildren(
+  const done = doneList(plan.week);
+  const faab = board.waiverType === 'FAAB';
+  const tableHost = h('div');
+  let pos = 'ALL';
+  let showAll = false;
+  const drawTable = () => fill(tableHost, boardTable(board, { pos, showAll, faab }));
+  const filters = h('div.row-flex.mb',
+    h('div.seg', ...POSITIONS.map((p) => h('button', {
+      class: p === pos ? 'on' : '',
+      onclick: (e) => { pos = p; [...e.target.parentNode.children].forEach((b) => b.classList.toggle('on', b === e.target)); drawTable(); },
+    }, p))),
+    h('label.small.mute', h('input', { type: 'checkbox', onchange: (e) => { showAll = e.target.checked; drawTable(); } }),
+      ' include players who don’t help you'));
+  drawTable();
+
+  fill(root,
     h('div.page-head',
       h('div',
-        h('h2', 'Waiver Wire'),
-        h('div.sub', 'Ranked by change in championship probability, not by projected points. A big projection you cannot start is worth nothing.')
-      )
-    ),
+        h('h2', 'Pickups'),
+        h('div.sub', 'Who to add this week, who to drop for them, and everyone else worth knowing about.'))),
 
-    h('div.grid.c4.mb',
-      h('div.card', stat('FAAB remaining', money(d.faabRemaining))),
-      h('div.card', stat('Weeks to playoffs', d.weeksRemaining)),
-      h('div.card', stat('Your playoff odds', d.playoffOdds != null ? pct(d.playoffOdds) : '—',
-        { cls: d.playoffOdds >= 0.6 ? 'good' : d.playoffOdds <= 0.3 ? 'bad' : 'warn' })),
-      h('div.card', stat('Drop candidate', d.drop?.name ?? '—', { size: 'sm', delta: d.drop ? `${d.drop.pos} · weakest bench spot` : 'roster is full of starters' }))
-    ),
+    howWaiversWork(board, faab),
 
-    h('div.section-head',
-      h('h3', 'Act on these'),
-      h('span.note', 'the bid is what the player is worth to YOU, shaded past what rivals are predicted to bid')),
-    d.targets.length
-      ? h('div.grid', { style: { gap: '10px' } }, ...d.targets.slice(0, FEATURED).map(targetCard))
-      : empty('◇', 'No free agents improve your roster',
-          'That is a good sign — your bench is already better than the wire.'),
+    h('div.section-head', h('h3', 'Your moves this week'),
+      h('span.note', 'in order — each one assumes you made the ones above it')),
+    plan.acquisitions.length
+      ? h('div.card.todos', ...plan.acquisitions.map((a) => moveRow(a, plan, done)))
+      : h('div.card', h('div.todo-title', 'No pickup is worth a roster spot right now.'),
+          h('div.small.dim', plan.acquisitionNote ?? '')),
 
-    // Everything past the top few is reference, not a call to action. Thirty
-    // full cards is a scroll, not a decision.
-    d.targets.length > FEATURED ? frag(
-      h('div.section-head',
-        h('h3', 'Rest of the board'),
-        h('span.note', 'same valuation, compact — nothing here is urgent')),
-      h('div.card.tight',
-        table(
-          ['Player', 'Verdict', { label: 'Bid', num: true }, { label: '+/wk', num: true },
-            { label: 'Title Δ', num: true }, { label: 'Breakout', num: true }, { label: 'Own%', num: true }],
-          d.targets.slice(FEATURED).map((t) => h('tr',
-            h('td', h('div.row-flex', posEl(t.pos), h('span.pname', t.name),
-              h('span.pmeta', t.nfl_team ?? ''), statusBadge(t.status),
-              t.startsImmediately ? badge('STARTS', 'ok') : null)),
-            h('td', badge((VERDICT[t.verdict.level] ?? VERDICT.pass).label,
-              (VERDICT[t.verdict.level] ?? VERDICT.pass).cls)),
-            h('td.num', { class: t.bid.amount > 0 ? '' : 'mute' }, money(t.bid.amount)),
-            h('td.num.mute', `+${n2(t.marginalWeekly)}`),
-            h('td.num', { class: t.titleDelta > 0.004 ? 'good' : 'mute' }, pct(t.titleDelta, 2)),
-            h('td.num', { class: t.breakout > 0.25 ? 'good' : 'mute' }, n2(t.breakout)),
-            h('td.num.mute', t.pctOwned != null ? `${n1(t.pctOwned)}%` : '—')
-          ))
-        )
-      )
-    ) : null,
-
-    d.breakouts.length ? frag(
-      h('div.section-head',
-        h('h3', 'Breakout signals'),
-        h('span.note', 'role has changed; the market has not repriced yet')),
-      h('div.card.tight',
-        table(
-          ['Player', 'Signal', { label: 'Score', num: true }, { label: 'Rostered', num: true }],
-          d.breakouts.map((b) => h('tr',
-            h('td', h('div.row-flex', posEl(b.pos), h('span.pname', b.name), h('span.pmeta', b.nfl_team ?? ''))),
-            h('td.small.dim', b.signal),
-            h('td.num.good', n2(b.score)),
-            h('td.num.mute', `${n1(b.pctOwned ?? 0)}%`)
-          ))
-        )
-      )
-    ) : null
+    h('div.section-head', h('h3', 'Best available'),
+      h('span.note', '“Adds” is how many points he’d add to your best lineup this week')),
+    filters,
+    tableHost,
   );
 }
 
-function targetCard(t) {
-  const v = VERDICT[t.verdict.level] ?? VERDICT.pass;
-  return h('div.card', { class: t.verdict.level === 'priority' ? 'accent' : '' },
-    h('div.spread',
-      h('div.row-flex',
-        badge(v.label, v.cls),
-        posEl(t.pos),
-        h('span', { style: { fontWeight: '600', fontSize: '15px' } }, t.name),
-        h('span.pmeta', t.nfl_team ?? ''),
-        statusBadge(t.status),
-        t.startsImmediately ? badge('STARTS FOR YOU', 'ok') : null
-      ),
-      h('div.row-flex',
-        h('div.right',
-          h('div.xs.mute', 'BID'),
-          h('div.mono', { style: { fontSize: '21px', fontWeight: '650', color: 'var(--accent)' } }, money(t.bid.amount))
-        )
-      )
-    ),
+function howWaiversWork(board, faab) {
+  const pri = board.waiverPriority;
+  return h('div.explainer',
+    h('b', 'How pickups work in your league. '),
+    faab
+      ? `You bid from a budget — ${money(board.faabRemaining)} left. `
+      : `Claims go by waiver priority, and yours is ${pri ?? '?'}${pri ? ` (${pri - 1} teams pick before you)` : ''}. `,
+    'A player marked “FA” in Yahoo is a free agent — add him and he’s yours immediately. One marked “W” is on waivers: your add becomes a claim that only goes through if no team ahead of you claims him first. ',
+    board.openSpot
+      ? h('span.good', 'You have an open roster spot, so your first add needs no drop.')
+      : null);
+}
 
-    h('div.grid.c4.mt-s', { style: { gap: '10px' } },
-      h('div', h('div.xs.mute', 'Lineup gain'), h('div.mono', `+${n2(t.marginalWeekly)}/wk`)),
-      h('div', h('div.xs.mute', 'Title odds'), h('div.mono.good', `+${pct(t.titleDelta, 2)}`)),
-      h('div', h('div.xs.mute', 'Rest of season'), h('div.mono', `+${n1(t.rosValue)} pts`)),
-      h('div', h('div.xs.mute', 'Breakout'), h('div.mono', { class: t.breakout > 0.25 ? 'good' : 'mute' }, n2(t.breakout)))
-    ),
+function moveRow(a, plan, done) {
+  const swap = (plan.plannedSwaps ?? []).find((s) => s.start.player_id === a.add.player_id);
+  return todo(done, `add:${a.add.player_id}`,
+    h('div.todo-title',
+      h('span.step', a.step ?? ''),
+      h('span.verb.add', 'ADD'), ' ', posEl(a.addPos ?? a.add.pos), ' ', h('b', a.add.name),
+      a.opponent ? h('span.mute', ` ${gameLabel(a.opponent, a.isHome)}`) : null,
+      h(a.drop ? 'span.verb.drop' : 'span.verb.sit', a.drop ? 'DROP' : 'NO DROP'), ' ',
+      a.drop ? h('b', a.drop.name) : h('span.mute', 'open roster spot'),
+      a.weeklyGain >= 0.5 ? h('span.gain', `+${n1(a.weeklyGain)} pts this week`) : h('span.gain.mute', 'long-term'),
+      whyLink(`Why do you recommend adding ${a.add.name}${a.drop ? ` and dropping ${a.drop.name}` : ''}?`)),
+    h('div.small.dim', plainWhy(a, swap)));
+}
 
-    h('div.rec', { class: t.verdict.level === 'priority' ? '' : t.verdict.level === 'speculative' ? 'info' : 'warn', style: { margin: '11px 0 0' } },
-      t.verdict.text),
+/** The model's reasoning, as a sentence a person would say. */
+function plainWhy(a, swap) {
+  const parts = [];
+  if (swap) parts.push(swap.sit ? `He starts for you at ${swap.slot} instead of ${swap.sit.name}.` : `He fills your ${swap.slot} spot.`);
+  else parts.push('He goes on your bench as a better option than the player you drop.');
+  if (a.seasonGain > 0.5) parts.push(`He also improves your typical lineup by about ${n1(a.seasonGain)} points a week for the rest of the season.`);
+  if (a.drop) parts.push(`${a.drop.name} is the least useful player on your bench.`);
+  return parts.join(' ');
+}
 
-    h('div.small.mute.mt-s', t.bid.rationale),
+const LABEL = {
+  starts: ['WOULD START', 'ok'],
+  depth: ['BENCH DEPTH', 'info'],
+  none: ['NO HELP', 'dim'],
+};
 
-    t.competition?.contenders?.length ? h('div.mt-s',
-      h('div.xs.mute', 'PREDICTED COMPETITION'),
-      h('div.row-flex.mt-s',
-        ...t.competition.contenders.map((c) => badge(`${c.team} ~${money(c.amount)}`, 'dim'))
-      )
-    ) : null,
-
-    t.dropSuggestion ? h('div.xs.mute.mt-s', `Drop ${t.dropSuggestion.name} (${t.dropSuggestion.pos}) to make room.`) : null,
-
-    h('div.mt-s', why('projection breakdown', () => componentBreakdown(t)))
+function boardTable(board, { pos, showAll, faab }) {
+  const rows = board.targets
+    .filter((t) => pos === 'ALL' || t.pos === pos)
+    .map((t) => ({ ...t, kind: t.startsImmediately && t.marginalWeekly > 0.05 ? 'starts' : t.rosValue > 0.5 ? 'depth' : 'none' }))
+    .filter((t) => showAll || t.kind !== 'none');
+  if (!rows.length) {
+    return empty('◇', pos === 'ALL' ? 'Nobody available improves your roster' : `No ${pos} available improves your roster`,
+      showAll ? '' : 'Tick “include players who don’t help you” to see the rest.');
+  }
+  return h('div.card.tight',
+    table(
+      ['Player', 'Game', { label: 'Proj', num: true }, { label: 'Adds', num: true }, 'For you',
+        ...(faab ? [{ label: 'Bid', num: true }] : []), ''],
+      rows.map((t) => h('tr',
+        h('td', h('div.row-flex', posEl(t.pos), h('span.pname', t.name), h('span.pmeta', t.nfl_team ?? ''), statusBadge(t.status))),
+        h('td.pmeta', t.opponent === 'BYE' ? h('span.bad', 'BYE') : gameLabel(t.opponent, t.isHome)),
+        h('td.num', n1(t.mean)),
+        h('td.num', { class: t.marginalWeekly > 0.05 ? 'good' : 'mute' }, t.marginalWeekly > 0.05 ? `+${n1(t.marginalWeekly)}` : '—'),
+        h('td', badge(...LABEL[t.kind])),
+        ...(faab ? [h('td.num', money(t.bid.amount))] : []),
+        h('td.right', why('details', () => frag(
+          h('div.small.mb', t.verdict.text),
+          t.dropSuggestion ? h('div.small.mb', `Would replace ${t.dropSuggestion.name} on your roster.`) : null,
+          h('div.small.mb', `Rest-of-season value to you: +${n1(t.rosValue)} points; title odds ${t.titleDelta > 0 ? '+' : ''}${pct(t.titleDelta, 2)}.`),
+          componentBreakdown(t))))
+      ))
+    )
   );
 }

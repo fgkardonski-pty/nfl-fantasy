@@ -12,6 +12,7 @@
   },
   "scripts": {
     "start": "node bin/oracle.mjs serve",
+    "dev": "node --watch-path=src --watch-path=bin bin/oracle.mjs serve",
     "demo": "node bin/oracle.mjs demo && node bin/oracle.mjs serve",
     "seed": "node bin/oracle.mjs demo",
     "sync": "node bin/oracle.mjs sync",
@@ -19,6 +20,7 @@
     "test": "node --test --experimental-sqlite \"test/*.test.mjs\"",
     "smoke": "node bin/smoke.mjs"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.1.0"
+  }
 }
